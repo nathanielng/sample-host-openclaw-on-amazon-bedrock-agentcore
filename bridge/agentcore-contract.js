@@ -158,7 +158,7 @@ function writeOpenClawConfig() {
     channels: {}, // No channels — messages bridged via WebSocket
   };
 
-  const homeDir = process.env.HOME || "/home/openclaw";
+  const homeDir = process.env.HOME || "/root";
   fs.mkdirSync(`${homeDir}/.openclaw`, { recursive: true });
   fs.writeFileSync(`${homeDir}/.openclaw/openclaw.json`, JSON.stringify(config, null, 2));
   console.log("[contract] OpenClaw headless config written");
@@ -221,7 +221,7 @@ async function lazyInit(userId, actorId, channel) {
     console.log("[contract] Starting Bedrock proxy...");
     const proxyEnv = {
       PATH: process.env.PATH,
-      HOME: process.env.HOME || "/home/openclaw",
+      HOME: process.env.HOME || "/root",
       NODE_PATH: process.env.NODE_PATH || "/app/node_modules",
       NODE_OPTIONS: process.env.NODE_OPTIONS || "",
       AWS_REGION: process.env.AWS_REGION || "us-west-2",

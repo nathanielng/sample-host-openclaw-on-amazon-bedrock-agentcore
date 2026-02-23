@@ -7,7 +7,7 @@
  *
  * Namespace format: {actorId.replace(/:/g, "_")} (e.g., "telegram_6087229962")
  * S3 prefix: {namespace}/.openclaw/
- * Local path: $HOME/.openclaw/ (defaults to /home/openclaw/.openclaw/)
+ * Local path: $HOME/.openclaw/ (defaults to /root/.openclaw/)
  */
 
 const { S3Client, GetObjectCommand, PutObjectCommand, ListObjectsV2Command } = require("@aws-sdk/client-s3");
@@ -15,7 +15,7 @@ const fs = require("fs");
 const path = require("path");
 
 const BUCKET = process.env.S3_USER_FILES_BUCKET;
-const LOCAL_PATH = process.env.HOME ? `${process.env.HOME}/.openclaw` : "/home/openclaw/.openclaw";
+const LOCAL_PATH = process.env.HOME ? `${process.env.HOME}/.openclaw` : "/root/.openclaw";
 const WORKSPACE_PREFIX = ".openclaw";
 
 // Skip patterns — files/dirs that should not be synced to S3

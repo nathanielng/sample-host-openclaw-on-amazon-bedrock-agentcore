@@ -58,18 +58,11 @@ COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
 # Create non-root user for running the application
-RUN groupadd --gid 1001 openclaw && \
-    useradd --uid 1001 --gid 1001 --create-home --shell /bin/bash openclaw && \
-    chown -R openclaw:openclaw /app /skills && \
-    mkdir -p /home/openclaw/.openclaw && \
-    chown -R openclaw:openclaw /home/openclaw/.openclaw
-
 # AgentCore Runtime requires port 8080
 EXPOSE 8080
 
 # AgentCore Runtime uses /ping for health checks (not Docker HEALTHCHECK)
 # No HEALTHCHECK directive needed — AgentCore manages this via /ping endpoint
-
-USER openclaw
+# Note: container runs as root inside a per-user AgentCore microVM (already isolated).
 
 ENTRYPOINT ["/app/entrypoint.sh"]
