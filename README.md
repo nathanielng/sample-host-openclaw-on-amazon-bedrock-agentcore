@@ -332,22 +332,29 @@ OpenClaw uses **Slack Events API** with the Router Lambda as the webhook endpoin
 
 **Configure Event Subscriptions:**
 
-9. Go to **Features** > **Event Subscriptions** and toggle **Enable Events** on
-10. Set the **Request URL** to:
+9. Get your API Gateway URL (you'll need this for the Request URL):
+    ```bash
+    aws cloudformation describe-stacks \
+      --stack-name OpenClawRouter \
+      --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" \
+      --output text --region $CDK_DEFAULT_REGION
     ```
-    ${API_URL}webhook/slack
+10. Go to **Features** > **Event Subscriptions** and toggle **Enable Events** on
+11. Set the **Request URL** to your API URL followed by `webhook/slack`, e.g.:
     ```
-    (Use the API URL from the OpenClawRouter stack outputs — Slack sends a challenge request and should show a green checkmark)
-11. Under **Subscribe to bot events**, add:
+    https://<your-api-id>.execute-api.us-west-2.amazonaws.com/webhook/slack
+    ```
+    Slack sends a verification challenge — you should see a green checkmark confirming the URL is valid.
+12. Under **Subscribe to bot events**, add:
     - `message.im` — receive direct messages
     - `message.channels` — messages in channels the bot is in (optional)
-12. Click **Save Changes**
+13. Click **Save Changes**
 
 **Store credentials in Secrets Manager:**
 
-13. From **Settings** > **Basic Information** > **App Credentials**, copy the **Signing Secret**
-14. From **Features** > **OAuth & Permissions**, copy the **Bot User OAuth Token** (starts with `xoxb-`)
-15. Store both values:
+14. From **Settings** > **Basic Information** > **App Credentials**, copy the **Signing Secret** (a hex string like `a1b2c3d4...` — this is NOT the app-level token that starts with `xapp-`)
+15. From **Features** > **OAuth & Permissions**, copy the **Bot User OAuth Token** (starts with `xoxb-`)
+16. Store both values:
     ```bash
     aws secretsmanager update-secret \
       --secret-id openclaw/channels/slack \
