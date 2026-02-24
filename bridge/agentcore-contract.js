@@ -178,6 +178,35 @@ function writeOpenClawConfig() {
     JSON.stringify(config, null, 2),
   );
   console.log("[contract] OpenClaw headless config written");
+
+  // Write AGENTS.md — OpenClaw loads this as workspace bootstrap instructions.
+  // Only write if not already present (workspace restore from S3 may have a user-customized version).
+  const agentsMdPath = `${homeDir}/.openclaw/AGENTS.md`;
+  if (!fs.existsSync(agentsMdPath)) {
+    fs.writeFileSync(agentsMdPath, [
+      "# Agent Instructions",
+      "",
+      "You are a helpful AI assistant running in a per-user container on AWS.",
+      "",
+      "## Scheduling & Cron Jobs",
+      "",
+      "You have the **eventbridge-cron** skill for scheduling tasks. When users ask to:",
+      "- Set up reminders, alarms, or scheduled messages",
+      "- Create recurring tasks or cron jobs",
+      "- Schedule daily, weekly, or periodic actions",
+      "",
+      "**Read the eventbridge-cron SKILL.md and use it.** Do NOT say cron is disabled.",
+      "The built-in cron is replaced by Amazon EventBridge Scheduler (more reliable, persists across sessions).",
+      "",
+      "Always ask the user for their **timezone** if you don't know it (e.g., Asia/Shanghai, America/New_York).",
+      "",
+      "## File Storage",
+      "",
+      "You have the **s3-user-files** skill for persistent file storage. Files survive across sessions.",
+      "",
+    ].join("\n"));
+    console.log("[contract] AGENTS.md written");
+  }
 }
 
 /**
@@ -238,6 +267,22 @@ async function lazyInit(userId, actorId, channel) {
       await workspaceSync.restoreWorkspace(namespace);
     } catch (err) {
       console.warn(`[contract] Workspace restore failed: ${err.message}`);
+    }
+
+    // 1b. Clean up stale lock files restored from S3 (prevents "session file locked" errors)
+    try {
+      const _fs = require("fs");
+      const { execSync } = require("child_process");
+      const _home = process.env.HOME || "/root";
+      const locks = execSync(`find ${_home}/.openclaw -name '*.lock' -type f 2>/dev/null || true`, { encoding: "utf8" }).trim();
+      if (locks) {
+        for (const lockFile of locks.split("\n").filter(Boolean)) {
+          _fs.unlinkSync(lockFile);
+        }
+        console.log(`[contract] Cleaned up stale lock files`);
+      }
+    } catch (err) {
+      console.warn(`[contract] Lock cleanup failed: ${err.message}`);
     }
 
     // 2. Start the Bedrock proxy with user identity env vars
