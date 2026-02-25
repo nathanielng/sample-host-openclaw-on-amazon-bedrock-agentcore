@@ -166,10 +166,17 @@ async function waitForPort(port, label, timeoutMs = 300000, intervalMs = 3000) {
 
 /**
  * Write a headless OpenClaw config (no channels — messages bridged via WebSocket).
- * Optimized for fast startup: no bundled skills, basic tool profile, no control UI.
+ * Full tool profile with deny list for unsafe/irrelevant tools.
+ * Sub-agents enabled for deep-research-pro and task-decomposer skills.
+ * Sandbox disabled — AgentCore microVMs provide per-user isolation.
  */
 function writeOpenClawConfig() {
   const fs = require("fs");
+
+  // Sub-agent model: defaults to main model, configurable via SUBAGENT_MODEL env var
+  const subagentModel =
+    process.env.SUBAGENT_MODEL || "agentcore/bedrock-agentcore";
+
   const config = {
     models: {
       providers: {
@@ -184,11 +191,28 @@ function writeOpenClawConfig() {
     agents: {
       defaults: {
         model: { primary: "agentcore/bedrock-agentcore" },
+        subagents: {
+          model: subagentModel,
+          maxConcurrent: 2,
+          runTimeoutSeconds: 900,
+          archiveAfterMinutes: 60,
+        },
+        sandbox: {
+          mode: "off", // No Docker in AgentCore container; microVMs provide isolation
+        },
       },
     },
     tools: {
-      profile: "basic",
-      deny: ["write", "edit", "apply_patch", "browser", "canvas", "automation"],
+      profile: "full",
+      deny: [
+        "write", // Local writes don't persist — use S3 skill instead
+        "edit", // Local edits are ephemeral — use S3 skill instead
+        "apply_patch", // Code patching not needed for chat assistant
+        "browser", // No headless browser in ARM64 container
+        "canvas", // No UI rendering in headless chat context
+        "cron", // EventBridge handles scheduling, not OpenClaw's built-in cron
+        "gateway", // Admin tool — not needed for end users
+      ],
     },
     skills: {
       allowBundled: [],
@@ -229,6 +253,15 @@ function writeOpenClawConfig() {
         "# Agent Instructions",
         "",
         "You are a helpful AI assistant running in a per-user container on AWS.",
+        "You have built-in web tools, file storage, scheduling, and many community skills.",
+        "",
+        "## Built-in Web Tools",
+        "",
+        "You have built-in **web_search** and **web_fetch** tools:",
+        "- **web_search**: Search the web for current information",
+        "- **web_fetch**: Fetch and read web page content as markdown",
+        "",
+        "Use these for real-time information, news, research, and reading web pages.",
         "",
         "## Scheduling & Cron Jobs",
         "",
@@ -245,6 +278,23 @@ function writeOpenClawConfig() {
         "## File Storage",
         "",
         "You have the **s3-user-files** skill for persistent file storage. Files survive across sessions.",
+        "",
+        "## Community Skills (ClawHub)",
+        "",
+        "The following community skills are pre-installed:",
+        "- **duckduckgo-search**: Web search via DuckDuckGo (no API key needed)",
+        "- **jina-reader**: Extract web content as clean markdown",
+        "- **deep-research-pro**: In-depth multi-step research on complex topics (uses sub-agents)",
+        "- **telegram-compose**: Rich HTML formatting for Telegram messages",
+        "- **transcript**: YouTube video transcript extraction",
+        "- **hackernews**: Browse and search Hacker News",
+        "- **news-feed**: RSS-based news aggregation",
+        "- **task-decomposer**: Break complex requests into manageable subtasks (uses sub-agents)",
+        "",
+        "## Sub-agents",
+        "",
+        "Skills like deep-research-pro and task-decomposer can spawn sub-agents for parallel work.",
+        "Sub-agents share the same model and capabilities. Sandbox is disabled (the container is already isolated).",
         "",
       ].join("\n"),
     );

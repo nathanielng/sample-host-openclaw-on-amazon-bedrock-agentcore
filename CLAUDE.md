@@ -311,6 +311,7 @@ aws dynamodb scan --table-name openclaw-identity --region $CDK_DEFAULT_REGION
 | `cron_lambda_timeout_seconds` | `600` | Cron executor Lambda timeout (must exceed warmup time) |
 | `cron_lambda_memory_mb` | `256` | Cron executor Lambda memory |
 | `cron_lead_time_minutes` | `5` | Minutes before schedule time to start warmup |
+| `subagent_model_id` | (empty) | Bedrock model for sub-agents. Empty = use `default_model_id` |
 
 ## Container Startup Sequence
 
@@ -423,9 +424,14 @@ Only the **first channel identity** needs to be allowlisted. When a user binds a
 ### OpenClaw
 - Startup takes ~2-4 minutes (plugin registration); lightweight agent shim handles messages during this time
 - Correct start command: `openclaw gateway run --port 18789 --bind lan --verbose`
+- **Tool profile**: Uses `"full"` profile with a deny list. Do NOT use `"basic"` (undocumented, may disable web tools). Documented profiles: `minimal`, `coding`, `messaging`, `full`
+- **Deny list**: `["write", "edit", "apply_patch", "browser", "canvas", "cron", "gateway"]` — local writes use S3 skill, no browser/UI in container, EventBridge replaces built-in cron
+- **Sub-agent sandbox**: Must be `"off"` — no Docker inside AgentCore microVMs. MicroVMs already provide per-user isolation
+- **Sub-agent model**: Configurable via `SUBAGENT_MODEL` env var (from `subagent_model_id` in cdk.json). Empty = use same as main model
 - **`skills.allowBundled`**: Must be an array (e.g., `[]` for none, `["*"]` for all), not a boolean. Set to `[]` for fast startup
-- **ClawHub skill paths**: `clawhub install` installs to `/skills/<name>` — use `/skills` as `extraDirs`
-- **ClawHub VirusTotal flags**: Some skills flagged for external API calls — use `--force`
+- **ClawHub skill paths**: `clawhub install` installs to managed skills path — OpenClaw scans this automatically. Custom skills in `/skills/` loaded via `extraDirs`
+- **ClawHub VirusTotal flags**: Some skills flagged for external API calls — use `--no-input --force` for non-interactive Docker builds
+- **8 ClawHub skills installed**: duckduckgo-search, jina-reader, deep-research-pro, telegram-compose, transcript, hackernews, news-feed, task-decomposer
 - **Image updates**: New sessions use new image automatically (no keepalive restart needed)
 - **WebSocket bridge protocol**: Connect → auth (type:req, method:connect, protocol:3, auth:{token}) → agent.chat → streaming deltas → final
 - **OpenClaw 2026.2.23 breaking change**: Non-loopback `controlUi` requires `dangerouslyAllowHostHeaderOriginFallback: true` or explicit `allowedOrigins`. Without this, `openclaw gateway run --bind lan` fails with `Error: non-loopback Control UI requires gateway.controlUi.allowedOrigins`

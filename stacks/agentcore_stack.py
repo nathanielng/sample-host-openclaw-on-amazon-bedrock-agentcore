@@ -188,6 +188,7 @@ class AgentCoreStack(Stack):
 
         # --- Default Bedrock model ID -----------------------------------------
         default_model_id = self.node.try_get_context("default_model_id") or "global.anthropic.claude-opus-4-6-v1"
+        subagent_model_id = self.node.try_get_context("subagent_model_id") or ""
 
         # --- AgentCore Runtime (hosts OpenClaw container) ---------------------
         self.runtime = agentcore.CfnRuntime(
@@ -229,6 +230,8 @@ class AgentCoreStack(Stack):
                 "CRON_LEAD_TIME_MINUTES": str(
                     self.node.try_get_context("cron_lead_time_minutes") or "5"
                 ),
+                # Sub-agent model: empty = use same as default_model_id
+                "SUBAGENT_MODEL": subagent_model_id,
             },
             description="OpenClaw messaging bridge on AgentCore Runtime (per-user sessions)",
             lifecycle_configuration=agentcore.CfnRuntime.LifecycleConfigurationProperty(

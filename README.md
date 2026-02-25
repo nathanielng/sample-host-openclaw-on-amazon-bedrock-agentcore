@@ -325,6 +325,7 @@ All tunable parameters are in `cdk.json`:
 | `account` | (empty) | AWS account ID. Falls back to `CDK_DEFAULT_ACCOUNT` env var |
 | `region` | `us-west-2` | AWS region. Falls back to `CDK_DEFAULT_REGION` env var |
 | `default_model_id` | `global.anthropic.claude-opus-4-6-v1` | Bedrock model ID. The `global.` prefix routes to any available region automatically |
+| `subagent_model_id` | (empty) | Bedrock model ID for sub-agents. Empty = use `default_model_id`. Set to e.g. `global.anthropic.claude-sonnet-4-6-v1` for faster/cheaper sub-agents |
 | `cloudwatch_log_retention_days` | `30` | Log retention in days |
 | `daily_token_budget` | `1000000` | Daily token budget alarm threshold |
 | `daily_cost_budget_usd` | `5` | Daily cost budget alarm threshold (USD) |
@@ -544,7 +545,7 @@ Each user's schedules are isolated — no cross-user access. Schedule metadata i
    - Wait for proxy only (~5s)
 5. **Warm-up phase** (t=~10s to ~2-4min): `lightweight-agent.js` handles messages via proxy -> Bedrock (supports s3-user-files and eventbridge-cron tools — users can manage files and schedules immediately)
 6. **Handoff** (~2-4min): OpenClaw becomes ready, all subsequent messages route via WebSocket bridge
-7. **After handoff**: Full OpenClaw features (skills, plugins, session management)
+7. **After handoff**: Full OpenClaw features — built-in web tools (`web_search`, `web_fetch`), 8 ClawHub skills, sub-agent support, session management
 8. **SIGTERM**: Save `.openclaw/` to S3, kill child processes, exit
 
 ### Message Flow
@@ -717,7 +718,7 @@ Node.js 22's Happy Eyeballs (`autoSelectFamily`) tries both IPv4 and IPv6. In VP
 - **CDK RetentionDays**: `logs.RetentionDays` is an enum, not constructable from int. Use the helper in `stacks/__init__.py`.
 - **Cognito passwords**: HMAC-derived (`HMAC-SHA256(secret, actorId)`) — deterministic, never stored. Enables `AdminInitiateAuth` without per-user password storage.
 - **`skills.allowBundled` is an array**: OpenClaw expects `["*"]` (not `true`) — boolean causes config validation failure.
-- **ClawHub installs to `/skills/`**: Not `~/.openclaw/skills`. The `extraDirs` config must point to `/skills`.
+- **ClawHub skills**: 8 community skills are pre-installed at Docker build time. Custom skills (s3-user-files, eventbridge-cron) are in `/skills/` loaded via `extraDirs`. ClawHub installs to the managed skills path, scanned automatically by OpenClaw.
 - **ClawHub `--force` flag**: Some skills are flagged by VirusTotal for external API calls. Use `--no-input --force` for non-interactive Docker builds.
 - **`default-user` fallback**: If identity resolution fails, requests fall back to `actorId = "default-user"` — meaning all such users share one S3 namespace. The `USER_ID` env var path (set by contract server) should prevent this in per-user mode.
 - **actorId vs namespace format**: The actorId uses colon format (`telegram:6087229962`) while skill scripts expect namespace/underscore format (`telegram_6087229962`). The lightweight agent's `chat()` function converts via `userId.replace(/:/g, "_")` before passing to tool scripts. The proxy and workspace sync also use namespace format for S3 keys.

@@ -26,7 +26,10 @@ const SYSTEM_PROMPT =
   "for detail. If you don't know something, say so honestly. You are accessed through " +
   "messaging channels (Telegram, Slack). Keep responses appropriate for chat-style messaging. " +
   "You can also schedule recurring tasks using EventBridge cron. When users ask for reminders, " +
-  "scheduled tasks, or recurring actions, use the scheduling tools. Always ask for timezone if not known.";
+  "scheduled tasks, or recurring actions, use the scheduling tools. Always ask for timezone if not known. " +
+  "After startup completes (~2-4 minutes), you gain additional capabilities: web search, " +
+  "web page reading, deep research, YouTube transcripts, Hacker News, news feeds, and more. " +
+  "During this initial warm-up period, you can help with file storage, scheduling, and general knowledge.";
 
 const TOOLS = [
   {

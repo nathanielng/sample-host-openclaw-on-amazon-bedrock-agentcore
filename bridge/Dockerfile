@@ -12,6 +12,17 @@ RUN pip3 install --no-cache-dir --break-system-packages awscli
 # Install OpenClaw and ClawHub CLI globally
 RUN npm install -g openclaw@latest clawhub@latest
 
+# Install ClawHub community skills (8 marketplace skills)
+# --no-input --force: non-interactive, skip VirusTotal warnings
+RUN clawhub install duckduckgo-search --no-input --force && \
+    clawhub install jina-reader --no-input --force && \
+    clawhub install deep-research-pro --no-input --force && \
+    clawhub install telegram-compose --no-input --force && \
+    clawhub install transcript --no-input --force && \
+    clawhub install hackernews --no-input --force && \
+    clawhub install news-feed --no-input --force && \
+    clawhub install task-decomposer --no-input --force
+
 # Create app directory
 RUN mkdir -p /app
 

@@ -492,12 +492,24 @@ const WORKSPACE_DEFAULTS = {
     "No identity configured yet. When the user gives you a name, " +
     "vibe, or emoji, update this file.\n",
   "TOOLS.md":
-    "# Tools Documentation\n\n" +
-    "## Available Skills\n" +
+    "# Tools\n\n" +
+    "## Built-in Tools\n" +
+    "- **web_search**: Search the web for current information\n" +
+    "- **web_fetch**: Fetch and read web page content\n" +
+    "- **exec**: Run shell commands\n" +
+    "- **read**: Read local files\n\n" +
+    "## Custom Skills\n" +
     "- **s3-user-files**: Read, write, list, and delete files in your personal workspace\n" +
-    "- **duckduckgo-search**: Search the web\n" +
-    "- **jina-reader**: Read web page content\n" +
-    "- **deep-research-pro**: In-depth research on complex topics\n",
+    "- **eventbridge-cron**: Schedule recurring tasks, reminders, and cron jobs\n\n" +
+    "## ClawHub Skills\n" +
+    "- **duckduckgo-search**: Web search via DuckDuckGo (no API key needed)\n" +
+    "- **jina-reader**: Extract web content as clean markdown\n" +
+    "- **deep-research-pro**: In-depth multi-step research on complex topics\n" +
+    "- **telegram-compose**: Rich HTML formatting for Telegram messages\n" +
+    "- **transcript**: YouTube video transcript extraction\n" +
+    "- **hackernews**: Browse and search Hacker News\n" +
+    "- **news-feed**: RSS-based news aggregation\n" +
+    "- **task-decomposer**: Break complex requests into manageable subtasks\n",
   "MEMORY.md":
     "# Notes & Memories\n\n" +
     "No notes yet. When the user asks you to remember something, " +
