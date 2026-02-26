@@ -2,11 +2,11 @@
 
 > **Experimental** — This project is provided for experimentation and learning purposes only. It is **not intended for production use**. APIs, architecture, and configuration may change without notice.
 
-> **Note**: The cron job scheduling feature (via the `cron-mastery` skill) is not yet fully implemented. A future update will add Lambda-based cron job execution triggered by OpenClaw's cron scheduler. The skill is pre-installed but cron jobs cannot execute autonomously in the current serverless architecture.
-
 Deploy an AI-powered multi-channel messaging bot (Telegram, Slack) on AWS Bedrock AgentCore Runtime using CDK.
 
-OpenClaw runs as **per-user serverless containers** on AgentCore Runtime. A Router Lambda handles webhook ingestion from Telegram and Slack, resolves user identity via DynamoDB, and invokes per-user AgentCore sessions. Each user gets their own microVM with workspace persistence (`.openclaw/` directory synced to S3). The agent has built-in tools (web, filesystem, runtime, sessions, automation) and 10 pre-installed ClawHub skills.
+OpenClaw runs as **per-user serverless containers** on AgentCore Runtime. A Router Lambda handles webhook ingestion from Telegram and Slack, resolves user identity via DynamoDB, and invokes per-user AgentCore sessions. Each user gets their own microVM with workspace persistence (`.openclaw/` directory synced to S3). The agent has built-in tools (web, filesystem, runtime, sessions, automation), pre-installed ClawHub skills, and **EventBridge-based cron scheduling** for recurring tasks.
+
+Users can send **text and images** — photos sent via Telegram or Slack are downloaded by the Router Lambda, stored in S3, and passed to Claude as multimodal content via Bedrock's ConverseStream API. Supported formats: JPEG, PNG, GIF, WebP (max 3.75 MB).
 
 ## Architecture
 
@@ -52,6 +52,23 @@ OpenClaw runs as **per-user serverless containers** on AgentCore Runtime. A Rout
   | Via s3-user-files     |        | Restored on init,      |
   | skill                 |        | saved periodically     |
   +-----------------------+        +------------------------+
+
+  +------------------------------------------+
+  | S3 Image Uploads                         |
+  | {namespace}/_uploads/img_*.{jpeg,png,...} |
+  | Router Lambda uploads, proxy fetches     |
+  | for Bedrock multimodal ConverseStream    |
+  +------------------------------------------+
+
+  +------------------------------------------------------+
+  | EventBridge Scheduler (Cron Jobs)                    |
+  |                                                      |
+  | openclaw-cron schedule group                         |
+  |   -> Cron Lambda (openclaw-cron-executor)            |
+  |     1. Warm up user's AgentCore session              |
+  |     2. Send cron message via AgentCore               |
+  |     3. Deliver response to Telegram/Slack            |
+  +------------------------------------------------------+
 
   Supporting: VPC, KMS, Secrets Manager, Cognito,
              CloudWatch, DynamoDB, CloudTrail
@@ -161,13 +178,14 @@ cdk synth          # validate (runs cdk-nag security checks)
 cdk deploy --all --require-approval never
 ```
 
-This deploys 6 stacks in order:
+This deploys 7 stacks in order:
 1. **OpenClawVpc** — VPC, subnets, NAT gateway, VPC endpoints
 2. **OpenClawSecurity** — KMS, Secrets Manager, Cognito, CloudTrail
 3. **OpenClawAgentCore** — Runtime, WorkloadIdentity, ECR, S3, IAM
 4. **OpenClawRouter** — Lambda + API Gateway HTTP API, DynamoDB identity table
 5. **OpenClawObservability** — Dashboards, alarms, Bedrock logging
 6. **OpenClawTokenMonitoring** — DynamoDB, Lambda processor, token analytics
+7. **OpenClawCron** — EventBridge Scheduler group, Cron executor Lambda, Scheduler IAM role
 
 The CDK AgentCore stack creates the ECR repository. The container image does not need to exist at deploy time — AgentCore only pulls the image when spinning up a microVM for a user session.
 
@@ -248,8 +266,8 @@ Send a message to your Telegram bot. The first message triggers a cold start (~4
 
 ```
 openclaw-on-agentcore/
-  app.py                          # CDK app entry point (6 stacks)
-  cdk.json                        # Configuration (model, budgets, sessions)
+  app.py                          # CDK app entry point (7 stacks)
+  cdk.json                        # Configuration (model, budgets, sessions, cron)
   requirements.txt                # Python deps (aws-cdk-lib, cdk-nag)
   stacks/
     __init__.py                   # Shared helper (RetentionDays converter)
@@ -259,18 +277,24 @@ openclaw-on-agentcore/
     router_stack.py               # Router Lambda + API Gateway HTTP API + DynamoDB identity
     observability_stack.py        # Dashboards, alarms, Bedrock logging
     token_monitoring_stack.py     # Lambda processor, DynamoDB, token analytics
+    cron_stack.py                 # EventBridge Scheduler, Cron executor Lambda, IAM
   bridge/
     Dockerfile                    # Container image (node:22-slim, ARM64, clawhub skills)
     entrypoint.sh                 # Startup: configure IPv4, start contract server
     agentcore-contract.js         # AgentCore HTTP contract with lazy init + WebSocket bridge
-    agentcore-proxy.js            # OpenAI -> Bedrock ConverseStream adapter + Identity
+    agentcore-proxy.js            # OpenAI -> Bedrock ConverseStream adapter + Identity + multimodal images
+    image-support.test.js         # Image support unit tests (node:test)
     workspace-sync.js             # .openclaw/ directory S3 sync (restore/save/periodic)
     force-ipv4.js                 # DNS patch for Node.js 22 IPv6 issue
+    CLAUDE.md                     # Project instructions (for Claude Code IDE)
     skills/
       s3-user-files/              # Custom per-user file storage skill (S3-backed)
+      eventbridge-cron/           # Cron scheduling skill (EventBridge Scheduler)
   lambda/
     token_metrics/index.py        # Bedrock log -> DynamoDB + CloudWatch metrics
-    router/index.py               # Webhook router (Telegram + Slack)
+    router/index.py               # Webhook router (Telegram + Slack, image uploads)
+    router/test_image_upload.py   # Image upload unit tests (pytest)
+    cron/index.py                 # Cron executor (warmup, invoke, deliver)
   scripts/
     setup-telegram.sh             # Telegram webhook + admin allowlist (one-step)
     setup-slack.sh                # Slack Event Subscriptions + admin allowlist
@@ -289,6 +313,7 @@ openclaw-on-agentcore/
 | **OpenClawRouter** | Lambda, API Gateway HTTP API (explicit routes, throttling), DynamoDB identity table | AgentCore, Security |
 | **OpenClawObservability** | Operations dashboard, alarms (errors, latency, throttles), SNS, Bedrock logging | None |
 | **OpenClawTokenMonitoring** | DynamoDB (single-table, 4 GSIs), Lambda processor, analytics dashboard | Observability |
+| **OpenClawCron** | EventBridge Scheduler group, Cron executor Lambda, Scheduler IAM role | AgentCore, Router, Security |
 
 ## Configuration
 
@@ -311,6 +336,9 @@ All tunable parameters are in `cdk.json`:
 | `token_ttl_days` | `90` | DynamoDB token usage record TTL |
 | `image_version` | `1` | Bridge container version tag. Bump to force container redeploy |
 | `user_files_ttl_days` | `365` | S3 per-user file expiration |
+| `cron_lambda_timeout_seconds` | `600` | Cron executor Lambda timeout (must exceed warmup time) |
+| `cron_lambda_memory_mb` | `256` | Cron executor Lambda memory |
+| `cron_lead_time_minutes` | `5` | Minutes before schedule time to start warmup |
 
 ## Channel Setup
 
@@ -340,6 +368,7 @@ OpenClaw uses **Slack Events API** with the Router Lambda as the webhook endpoin
 
 4. Go to **Features** > **OAuth & Permissions** > **Scopes** > **Bot Token Scopes** and add:
    - `chat:write` — send messages
+   - `files:read` — download image attachments (required for image upload support)
    - `app_mentions:read` — detect @mentions (optional)
    - `im:history` — read DM history
    - `im:read` — access DMs
@@ -415,6 +444,23 @@ Each user gets their own AgentCore microVM. When a user sends a message:
 
 When the session idles (default 30 min), AgentCore terminates the microVM. Before shutdown, the SIGTERM handler saves `.openclaw/` to S3. The next message creates a fresh microVM and restores the workspace.
 
+### Image Uploads
+
+Users can send photos alongside text messages. The system supports JPEG, PNG, GIF, and WebP images up to 3.75 MB (the Bedrock Converse API limit).
+
+**How it works:**
+
+1. **Router Lambda** detects an image in the incoming webhook (Telegram `photo` array or `document` with image MIME type; Slack `files` with image MIME type)
+2. **Router Lambda** downloads the image from the channel API (Telegram `getFile` endpoint; Slack `url_private_download` with Bearer auth) and uploads it to S3 under `{namespace}/_uploads/img_{timestamp}_{hex}.{ext}`
+3. The message payload sent to AgentCore becomes a structured object: `{"text": "caption text", "images": [{"s3Key": "...", "contentType": "image/jpeg"}]}`
+4. **Contract server** converts this to a string with an appended marker: `caption text\n\n[OPENCLAW_IMAGES:[...]]`
+5. **Proxy** extracts the marker, fetches the image bytes from S3 (validating the S3 key belongs to the user's namespace), and builds Bedrock multimodal content blocks
+6. **Bedrock ConverseStream** receives both text and image content, enabling Claude to reason about the image
+
+**Telegram**: Photos use the `caption` field for text (not `text`). The Router Lambda checks both. The largest photo size in the `photo` array is used.
+
+**Slack**: The bot requires the `files:read` OAuth scope to download file attachments. Without it, images are silently ignored and only text is processed.
+
 ### Cross-Channel Account Linking
 
 By default, each channel creates a separate user identity. If you use both Telegram and Slack, you'll have two separate sessions with separate conversation histories. To unify them into a single identity and shared session:
@@ -455,6 +501,35 @@ Only the first channel identity needs to be allowlisted. When a user binds a sec
 
 To make the bot open to everyone, set `registration_open: true` in `cdk.json` and redeploy.
 
+### Scheduled Tasks (Cron Jobs)
+
+The agent can create, manage, and execute **recurring scheduled tasks** using Amazon EventBridge Scheduler. Schedules persist across sessions and fire even when the user is not chatting — the response is delivered to the user's Telegram or Slack channel automatically.
+
+**Just ask the bot in natural language.** Examples:
+
+| What you say | What the bot does |
+|---|---|
+| "Remind me every day at 7am to check my email" | Creates a daily schedule at 7:00 AM in your timezone |
+| "Every weekday at 5pm remind me to log my hours" | Creates a MON-FRI schedule at 17:00 |
+| "Send me a weather update every morning at 8" | Creates a daily schedule at 8:00 AM |
+| "What schedules do I have?" | Lists all your active schedules |
+| "Change my morning reminder to 8:30am" | Updates the schedule expression |
+| "Pause my daily reminder" | Disables the schedule (keeps it for later) |
+| "Resume my daily reminder" | Re-enables a paused schedule |
+| "Delete all my reminders" | Removes all schedules |
+
+The bot will ask for your **timezone** (e.g., `Australia/Sydney`, `America/New_York`, `Asia/Tokyo`) if it doesn't know it yet.
+
+**How it works under the hood:**
+
+1. The bot uses the `eventbridge-cron` skill to create an EventBridge Scheduler rule in the `openclaw-cron` schedule group
+2. At the scheduled time, EventBridge invokes the Cron executor Lambda (`openclaw-cron-executor`)
+3. The Lambda warms up the user's AgentCore session (or waits for it to initialize if cold)
+4. The Lambda sends the scheduled message to the agent via AgentCore
+5. The agent processes the message and the Lambda delivers the response to the user's chat channel
+
+Each user's schedules are isolated — no cross-user access. Schedule metadata is stored in the DynamoDB identity table alongside user profiles and session data.
+
 ### Container Startup Sequence
 
 1. **entrypoint.sh**: Configure Node.js IPv4 DNS patch, start contract server
@@ -472,15 +547,19 @@ To make the bot open to everyone, set `registration_open: true` in `cdk.json` an
 ### Message Flow
 
 ```
-User sends Telegram message
+User sends Telegram message (text or photo)
   -> Telegram webhook POST to API Gateway HTTP API
   -> Lambda self-invokes async (returns 200 to Telegram immediately)
   -> Lambda resolves user in DynamoDB (or creates new user)
+  -> If photo: download from Telegram API, upload to S3 ({namespace}/_uploads/...)
   -> Lambda calls InvokeAgentRuntime(sessionId=per-user)
+     message = string (text only) or {text, images[{s3Key, contentType}]} (with photo)
   -> Contract server receives /invocations {action: "chat", ...}
   -> Lazy init (first message only): restore workspace, start proxy + OpenClaw
+  -> Contract converts structured message to bridge text + [OPENCLAW_IMAGES:...] marker
   -> WebSocket bridge to OpenClaw gateway: auth -> agent.chat -> streaming deltas
-  -> Proxy converts to Bedrock ConverseStream API call
+  -> Proxy extracts image marker, fetches image bytes from S3 (namespace-validated)
+  -> Proxy converts to Bedrock ConverseStream API call (multimodal: text + image blocks)
   -> Claude Opus 4.6 generates response (with user-specific workspace context)
   -> Response accumulated from streaming deltas
   -> Lambda sends response to Telegram via sendMessage API
@@ -500,7 +579,7 @@ The agent runs with OpenClaw's **full tool profile** enabled, giving it access t
 | `hackernews` | Browse/search Hacker News |
 | `news-feed` | RSS-based news aggregation |
 | `task-decomposer` | Break complex requests into subtasks |
-| `cron-mastery` | Cron scheduling and management |
+| `eventbridge-cron` | Cron scheduling via EventBridge Scheduler (custom) |
 | `s3-user-files` | Per-user file storage (S3-backed, custom) |
 
 ### Webhook Security
@@ -561,7 +640,12 @@ cdk deploy OpenClawAgentCore --require-approval never
 
 ```bash
 cd bridge && node --test proxy-identity.test.js       # identity + workspace tests
+cd bridge && node --test image-support.test.js         # image upload + multimodal tests
 cd bridge/skills/s3-user-files && AWS_REGION=$CDK_DEFAULT_REGION node --test common.test.js  # S3 skill tests
+cd lambda/router && python -m pytest test_image_upload.py -v   # image upload unit tests
+
+# E2E tests (requires deployed stack and configured environment)
+cd tests/e2e && python -m pytest bot_test.py -v        # simulated Telegram webhook E2E tests
 ```
 
 ### Security validation
@@ -630,6 +714,9 @@ Node.js 22's Happy Eyeballs (`autoSelectFamily`) tries both IPv4 and IPv6. In VP
 - **ClawHub installs to `/skills/`**: Not `~/.openclaw/skills`. The `extraDirs` config must point to `/skills`.
 - **ClawHub `--force` flag**: Some skills are flagged by VirusTotal for external API calls. Use `--no-input --force` for non-interactive Docker builds.
 - **`default-user` fallback**: If identity resolution fails, requests fall back to `actorId = "default-user"` — meaning all such users share one S3 namespace. The `USER_ID` env var path (set by contract server) should prevent this in per-user mode.
+- **Image version bumps are required**: After pushing a new bridge container image, you must bump `image_version` in `cdk.json` and redeploy `OpenClawAgentCore`. AgentCore caches images by digest and only re-pulls when the runtime endpoint configuration changes. Without the bump, existing sessions continue using the old image.
+- **Image upload size limit**: Bedrock Converse API limits images to 3.75 MB. The Router Lambda checks this before uploading to S3.
+- **OpenClaw 2026.2.23 controlUi breaking change**: OpenClaw versions from 2026.2.23 onward require `gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback: true` (or explicit `allowedOrigins`) when binding to non-loopback addresses (`--bind lan`). Without this, the gateway fails to start with: `Error: non-loopback Control UI requires gateway.controlUi.allowedOrigins`. The contract server's `writeOpenClawConfig()` includes this setting.
 
 ## Cleanup
 
