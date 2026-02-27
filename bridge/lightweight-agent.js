@@ -364,9 +364,10 @@ function stripHtml(html) {
   let text = html;
 
   // Remove script, style, and noscript blocks (including content)
-  text = text.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, " ");
-  text = text.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, " ");
-  text = text.replace(/<noscript[^>]*>[\s\S]*?<\/noscript>/gi, " ");
+  // Closing tags allow optional whitespace/attributes: </script > , </SCRIPT\n>
+  text = text.replace(/<script[^>]*>[\s\S]*?<\/\s*script\s*>/gi, " ");
+  text = text.replace(/<style[^>]*>[\s\S]*?<\/\s*style\s*>/gi, " ");
+  text = text.replace(/<noscript[^>]*>[\s\S]*?<\/\s*noscript\s*>/gi, " ");
 
   // Remove HTML comments
   text = text.replace(/<!--[\s\S]*?-->/g, " ");
@@ -374,8 +375,8 @@ function stripHtml(html) {
   // Remove all HTML tags
   text = text.replace(/<[^>]+>/g, " ");
 
-  // Decode common HTML entities
-  text = text.replace(/&amp;/g, "&");
+  // Decode common HTML entities (&amp; MUST be last to prevent double-unescaping:
+  // e.g. &amp;lt; → &lt; → < if &amp; is decoded first)
   text = text.replace(/&lt;/g, "<");
   text = text.replace(/&gt;/g, ">");
   text = text.replace(/&quot;/g, '"');
@@ -384,6 +385,7 @@ function stripHtml(html) {
   text = text.replace(/&#(\d+);/g, (_, code) =>
     String.fromCharCode(parseInt(code, 10)),
   );
+  text = text.replace(/&amp;/g, "&");
 
   // Collapse whitespace
   text = text.replace(/\s+/g, " ").trim();

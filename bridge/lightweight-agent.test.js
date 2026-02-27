@@ -527,7 +527,8 @@ describe("parseSearchResults", () => {
     `;
     const result = parseSearchResults(html);
     assert.ok(result.includes("Example Title"), "should include first title");
-    assert.ok(result.includes("https://example.com"), "should include first URL");
+    // Use line-boundary match to avoid CodeQL incomplete-URL-substring warning
+    assert.ok(/^\s*https:\/\/example\.com$/m.test(result), "should include first URL on its own line");
     assert.ok(result.includes("Other Page"), "should include second title");
   });
 
@@ -549,7 +550,8 @@ describe("parseSearchResults", () => {
       </div>
     `;
     const result = parseSearchResults(html);
-    assert.ok(result.includes("https://example.com/page"), "should decode uddg URL");
+    // Use line-boundary match to avoid CodeQL incomplete-URL-substring warning
+    assert.ok(/^\s*https:\/\/example\.com\/page$/m.test(result), "should decode uddg URL on its own line");
     assert.ok(!result.includes("uddg"), "should not include redirect params");
   });
 
