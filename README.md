@@ -1,4 +1,4 @@
-# OpenClaw on AgentCore Runtime
+# OpenClaw on AWS Bedrock AgentCore
 
 [![License: MIT-0](https://img.shields.io/badge/License-MIT--0-blue.svg)](LICENSE)
 [![Status: Experimental](https://img.shields.io/badge/Status-Experimental-orange.svg)]()
@@ -39,17 +39,21 @@ flowchart LR
     end
 
     subgraph AWS[AWS Cloud]
+        APIGW[API Gateway<br/>HTTP API]
         ROUTER[Router Lambda]
         AGENT[AgentCore Runtime<br/>Per-User Container]
         BEDROCK[Amazon Bedrock<br/>Claude]
         CRON[EventBridge<br/>Scheduler]
+        CRONLAMBDA[Cron Lambda]
     end
 
-    TG & SL <-->|webhooks| ROUTER
+    TG & SL <-->|webhooks| APIGW
+    APIGW <--> ROUTER
     ROUTER <--> AGENT
     AGENT <--> BEDROCK
-    CRON -->|scheduled tasks| AGENT
-    CRON -->|responses| TG & SL
+    CRON --> CRONLAMBDA
+    CRONLAMBDA <--> AGENT
+    CRONLAMBDA -->|Bot API| TG & SL
 ```
 
 **How it works:** Messages from Telegram/Slack hit the Router Lambda, which resolves user identity and routes to a per-user AgentCore container. Each user gets isolated compute, persistent workspace, and access to Claude via Bedrock.
@@ -77,7 +81,7 @@ See [SECURITY.md](SECURITY.md) for the complete security architecture.
 
 ## Prerequisites
 
-- **AWS Account** with Bedrock model access enabled for Claude Opus 4.6
+- **AWS Account** with Bedrock access
 - **AWS CLI** v2 configured with credentials (`aws sts get-caller-identity` should succeed)
 - **Node.js** >= 18 (for CDK CLI)
 - **Python** >= 3.11 (for CDK app)
@@ -85,21 +89,13 @@ See [SECURITY.md](SECURITY.md) for the complete security architecture.
 - **AWS CDK** v2 (`npm install -g aws-cdk`)
 - **Telegram Bot Token** from [@BotFather](https://t.me/BotFather)
 
-### Enable Bedrock Model Access
-
-Before deploying, enable model access in the AWS console:
-
-1. Go to **Amazon Bedrock** > **Model access** in your target region
-2. Request access to **Anthropic Claude Opus 4.6** (or the model specified in `cdk.json`)
-3. If using cross-region inference profiles (e.g., `global.anthropic.claude-opus-4-6-v1`), enable access in all regions the profile may route to
-
 ## Quick Start
 
 ### 1. Clone and configure
 
 ```bash
-git clone <repo-url>
-cd openclaw-on-agentcore
+git clone https://github.com/aws-samples/sample-host-openclaw-on-amazon-bedrock-agentcore.git
+cd sample-host-openclaw-on-amazon-bedrock-agentcore
 
 # Set your AWS account and region
 export CDK_DEFAULT_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
