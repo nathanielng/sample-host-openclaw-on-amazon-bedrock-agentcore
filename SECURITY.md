@@ -12,13 +12,17 @@ This solution applies defense-in-depth across the network, application, identity
 
 AgentCore containers run in **private VPC subnets** with no direct internet exposure. All AWS service access goes through VPC endpoints:
 
-- S3 (Gateway endpoint)
-- Secrets Manager (Interface endpoint)
-- Bedrock Runtime (Interface endpoint)
-- ECR (Interface endpoints for API and DKR)
-- CloudWatch Logs (Interface endpoint)
-- STS (Interface endpoint)
-- DynamoDB (Gateway endpoint)
+**Interface Endpoints (7):**
+- Bedrock Runtime
+- SSM (Systems Manager)
+- ECR API
+- ECR Docker
+- Secrets Manager
+- CloudWatch Logs
+- CloudWatch Monitoring
+
+**Gateway Endpoint (1):**
+- S3
 
 The **only public entry point** is the API Gateway HTTP API, which handles webhook ingestion from Telegram and Slack.
 
