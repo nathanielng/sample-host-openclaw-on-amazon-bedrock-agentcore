@@ -89,6 +89,7 @@ sequenceDiagram
     end
 
     RL->>AC: InvokeAgentRuntime
+    Note over RL,C: Typing indicator every 4s (Telegram)<br/>Progress message after 30s (both channels)
 
     opt First message (cold start)
         AC->>AC: Start proxy (~5s)
