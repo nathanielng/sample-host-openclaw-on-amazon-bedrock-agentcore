@@ -507,7 +507,54 @@ def _markdown_to_telegram_html(text):
         text, flags=re.DOTALL,
     )
 
-    # 2. Extract inline code: `text`
+    # 2. Extract markdown tables and render as monospace <pre> blocks
+    def _convert_table(m):
+        lines = m.group(0).strip().split("\n")
+        rows = []
+        for line in lines:
+            # Skip separator rows (|---|---|)
+            stripped = line.strip().strip("|").strip()
+            if stripped and not re.match(r"^[\s|:-]+$", stripped):
+                cells = [c.strip() for c in line.strip().strip("|").split("|")]
+                rows.append(cells)
+        if not rows:
+            return m.group(0)
+        # Calculate column widths
+        col_count = max(len(r) for r in rows)
+        widths = [0] * col_count
+        for row in rows:
+            for i, cell in enumerate(row):
+                if i < col_count:
+                    # Strip markdown bold for width calculation
+                    plain = re.sub(r"\*\*(.+?)\*\*", r"\1", cell)
+                    widths[i] = max(widths[i], len(plain))
+        # Format rows with padding
+        formatted = []
+        for ri, row in enumerate(rows):
+            parts = []
+            for i in range(col_count):
+                cell = row[i] if i < len(row) else ""
+                plain = re.sub(r"\*\*(.+?)\*\*", r"\1", cell)
+                pad = widths[i] - len(plain) + len(cell)
+                parts.append(cell.ljust(pad))
+            formatted.append("  ".join(parts))
+            # Add separator after header row
+            if ri == 0:
+                formatted.append("  ".join("─" * w for w in widths))
+        table_text = "\n".join(formatted)
+        table_text = table_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        # Convert bold inside table to HTML bold
+        table_text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", table_text)
+        return _placeholder(f"<pre>{table_text}</pre>")
+
+    # Match consecutive lines that start with |
+    text = re.sub(
+        r"(?:^\|.+\|[ \t]*$\n?){2,}",
+        _convert_table,
+        text, flags=re.MULTILINE,
+    )
+
+    # 3. Extract inline code: `text`
     text = re.sub(
         r"`([^`\n]+)`",
         lambda m: _placeholder(
@@ -518,10 +565,10 @@ def _markdown_to_telegram_html(text):
         text,
     )
 
-    # 3. HTML-escape remaining text
+    # 4. HTML-escape remaining text
     text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-    # 4. Convert markdown patterns to HTML
+    # 5. Convert markdown patterns to HTML
 
     # Headers: # Title → bold (Telegram has no header tag)
     text = re.sub(r"^#{1,6}\s+(.+)$", r"<b>\1</b>", text, flags=re.MULTILINE)
@@ -547,7 +594,7 @@ def _markdown_to_telegram_html(text):
     # Horizontal rules: --- or === or *** → thin line
     text = re.sub(r"^[-=*]{3,}\s*$", "———", text, flags=re.MULTILINE)
 
-    # 5. Re-insert placeholders
+    # 6. Re-insert placeholders
     for idx, content in enumerate(placeholders):
         text = text.replace(f"\x00PH{idx}\x00", content)
 

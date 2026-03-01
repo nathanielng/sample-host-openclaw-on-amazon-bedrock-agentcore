@@ -162,6 +162,77 @@ class TestMarkdownToTelegramHtml(unittest.TestCase):
         # The * at start of line followed by space should NOT become <i>
         self.assertNotIn("<i>", result)
 
+    # --- Tables ---
+
+    def test_simple_table(self):
+        """Markdown table is converted to a monospace <pre> block."""
+        text = (
+            "| Name   | Age |\n"
+            "|--------|-----|\n"
+            "| Alice  | 30  |\n"
+            "| Bob    | 25  |"
+        )
+        result = index._markdown_to_telegram_html(text)
+        self.assertIn("<pre>", result)
+        self.assertIn("</pre>", result)
+        self.assertIn("Alice", result)
+        self.assertIn("Bob", result)
+        # Separator row should use ─ not |---|
+        self.assertNotIn("|", result)
+        self.assertIn("─", result)
+
+    def test_table_with_bold(self):
+        """Bold text in table cells is rendered as HTML bold."""
+        text = (
+            "| Language       | Speed |\n"
+            "|----------------|-------|\n"
+            "| **Python**     | Slow  |\n"
+            "| **Rust**       | Fast  |"
+        )
+        result = index._markdown_to_telegram_html(text)
+        self.assertIn("<pre>", result)
+        self.assertIn("<b>Python</b>", result)
+        self.assertIn("<b>Rust</b>", result)
+
+    def test_table_column_alignment(self):
+        """Table columns are padded for alignment."""
+        text = (
+            "| A   | B |\n"
+            "|-----|---|\n"
+            "| foo | x |\n"
+            "| barbaz | y |"
+        )
+        result = index._markdown_to_telegram_html(text)
+        self.assertIn("<pre>", result)
+        # Longer values should push column width
+        self.assertIn("barbaz", result)
+
+    def test_table_with_surrounding_text(self):
+        """Table embedded in text is converted; surrounding text is preserved."""
+        text = (
+            "Here is a comparison:\n\n"
+            "| A | B |\n"
+            "|---|---|\n"
+            "| 1 | 2 |\n\n"
+            "That's the table."
+        )
+        result = index._markdown_to_telegram_html(text)
+        self.assertIn("Here is a comparison:", result)
+        self.assertIn("<pre>", result)
+        self.assertIn("That", result)
+
+    def test_table_html_entities_escaped(self):
+        """HTML special chars in table cells are escaped."""
+        text = (
+            "| Expr   | Result |\n"
+            "|--------|--------|\n"
+            "| a < b  | true   |\n"
+            "| c > d  | false  |"
+        )
+        result = index._markdown_to_telegram_html(text)
+        self.assertIn("&lt;", result)
+        self.assertIn("&gt;", result)
+
 
 if __name__ == "__main__":
     unittest.main()
