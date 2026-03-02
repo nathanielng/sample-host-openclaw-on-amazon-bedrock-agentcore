@@ -68,10 +68,14 @@ class AgentCoreStack(Stack):
         )
 
         # --- Execution Role (what the container can do) -----------------------
+        execution_role_name = "openclaw-agentcore-execution-role"
+        # Deterministic ARN avoids CDK circular dependency when the role
+        # references itself in its trust policy and inline policy.
+        execution_role_arn_str = f"arn:aws:iam::{account}:role/{execution_role_name}"
         self.execution_role = iam.Role(
             self,
             "OpenClawExecutionRole",
-            role_name="openclaw-agentcore-execution-role",
+            role_name=execution_role_name,
             assumed_by=iam.CompositePrincipal(
                 iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
                 iam.ServicePrincipal("bedrock.amazonaws.com"),
@@ -139,13 +143,13 @@ class AgentCoreStack(Stack):
         self.execution_role.add_to_policy(
             iam.PolicyStatement(
                 actions=["sts:AssumeRole"],
-                resources=[self.execution_role.role_arn],
+                resources=[execution_role_arn_str],
             )
         )
         self.execution_role.assume_role_policy.add_statements(
             iam.PolicyStatement(
                 actions=["sts:AssumeRole"],
-                principals=[iam.ArnPrincipal(self.execution_role.role_arn)],
+                principals=[iam.ArnPrincipal(execution_role_arn_str)],
             )
         )
 
@@ -236,7 +240,7 @@ class AgentCoreStack(Stack):
                 ),
                 "IMAGE_VERSION": image_version,  # bump in cdk.json to force container redeploy
                 # Per-user S3 credential scoping — STS AssumeRole with session policy
-                "EXECUTION_ROLE_ARN": self.execution_role.role_arn,
+                "EXECUTION_ROLE_ARN": execution_role_arn_str,
                 "CMK_ARN": cmk_arn,
                 # EventBridge cron scheduling — deterministic names to avoid circular deps
                 "EVENTBRIDGE_SCHEDULE_GROUP": "openclaw-cron",
