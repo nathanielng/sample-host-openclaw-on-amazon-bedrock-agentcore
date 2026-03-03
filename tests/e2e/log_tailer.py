@@ -24,10 +24,10 @@ PATTERNS = {
         r"Invoking AgentCore: arn=(\S+) qualifier=(\S+) session=(\S+)"
     ),
     "agentcore_response": re.compile(
-        r"AgentCore response body \(first \d+ chars\): (.+)"
+        r"AgentCore response \(len=\d+, first \d+ chars\): (.+)", re.DOTALL
     ),
     "response_to_send": re.compile(
-        r"Response to send \(len=(\d+)\): (.+)"
+        r"Response to send \(len=(\d+)\): (.+)", re.DOTALL
     ),
     "telegram_sent": re.compile(
         r"Telegram response sent to chat_id=(\S+)"

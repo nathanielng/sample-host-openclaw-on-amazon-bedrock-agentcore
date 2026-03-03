@@ -39,11 +39,12 @@ class TokenMonitoringStack(Stack):
         ttl_days = self.node.try_get_context("token_ttl_days") or 90
 
         # --- DynamoDB Token Usage Table -----------------------------------
-        token_cmk = kms.Key.from_key_arn(self, "TokenUsageTableCmk", cmk_arn)
+        # CMK encryption is optional — uncomment the two lines below if the
+        # table already exists and supports CUSTOMER_MANAGED encryption.
+        # token_cmk = kms.Key.from_key_arn(self, "TokenUsageTableCmk", cmk_arn)
         self.table = dynamodb.Table(
             self,
-            "TokenUsageTable",
-            table_name="openclaw-token-usage",
+            "TokenUsageTable2",
             partition_key=dynamodb.Attribute(
                 name="PK", type=dynamodb.AttributeType.STRING
             ),
@@ -54,8 +55,8 @@ class TokenMonitoringStack(Stack):
             removal_policy=RemovalPolicy.RETAIN,
             time_to_live_attribute="ttl",
             point_in_time_recovery=True,
-            encryption=dynamodb.TableEncryption.CUSTOMER_MANAGED,
-            encryption_key=token_cmk,
+            # encryption=dynamodb.TableEncryption.CUSTOMER_MANAGED,
+            # encryption_key=token_cmk,
         )
 
         # GSI1: Channel aggregation

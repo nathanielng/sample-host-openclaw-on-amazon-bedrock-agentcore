@@ -47,21 +47,6 @@ class SecurityStack(Stack):
             )
         )
 
-        # Allow CloudTrail to encrypt log files with the CMK
-        self.cmk.add_to_resource_policy(
-            iam.PolicyStatement(
-                actions=["kms:GenerateDataKey*"],
-                principals=[
-                    iam.ServicePrincipal("cloudtrail.amazonaws.com"),
-                ],
-                resources=["*"],
-                conditions={
-                    "StringEquals": {
-                        "aws:SourceArn": f"arn:aws:cloudtrail:{Stack.of(self).region}:{Stack.of(self).account}:trail/OpenClawSecurity-CloudTrail*",
-                    },
-                },
-            )
-        )
 
         # --- Gateway token (auto-generated 64-char) -----------------------
         self.gateway_token_secret = secretsmanager.Secret(
@@ -96,8 +81,7 @@ class SecurityStack(Stack):
         trail_bucket = s3.Bucket(
             self,
             "CloudTrailBucket",
-            encryption=s3.BucketEncryption.KMS,
-            encryption_key=self.cmk,
+            encryption=s3.BucketEncryption.S3_MANAGED,
             enforce_ssl=True,
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
             versioned=True,
@@ -116,7 +100,6 @@ class SecurityStack(Stack):
             self,
             "CloudTrail",
             bucket=trail_bucket,
-            encryption_key=self.cmk,
             send_to_cloud_watch_logs=True,
             cloud_watch_log_group=trail_log_group,
             is_multi_region_trail=False,

@@ -157,6 +157,7 @@ class RouterStack(Stack):
             )
             cfn_stage.access_log_settings = apigwv2.CfnStage.AccessLogSettingsProperty(
                 destination_arn=access_log_group.log_group_arn,
+                format='{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","method":"$context.httpMethod","path":"$context.path","status":"$context.status","responseLength":"$context.responseLength","latency":"$context.responseLatency","time":"$context.requestTime"}',
             )
 
         # --- IAM Permissions ---
@@ -165,7 +166,10 @@ class RouterStack(Stack):
         # IAM evaluates against runtime/{id}/runtime-endpoint/{endpoint-id}
         self.router_fn.add_to_role_policy(
             iam.PolicyStatement(
-                actions=["bedrock-agentcore:InvokeAgentRuntime"],
+                actions=[
+                    "bedrock-agentcore:InvokeAgentRuntime",
+                    "bedrock-agentcore:InvokeAgentRuntimeForUser",
+                ],
                 resources=[
                     runtime_arn,
                     f"{runtime_arn}/*",

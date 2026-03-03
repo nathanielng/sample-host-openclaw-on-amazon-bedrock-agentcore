@@ -107,7 +107,10 @@ class CronStack(Stack):
         # AgentCore Runtime invocation
         self.cron_fn.add_to_role_policy(
             iam.PolicyStatement(
-                actions=["bedrock-agentcore:InvokeAgentRuntime"],
+                actions=[
+                    "bedrock-agentcore:InvokeAgentRuntime",
+                    "bedrock-agentcore:InvokeAgentRuntimeForUser",
+                ],
                 resources=[
                     runtime_arn,
                     f"{runtime_arn}/*",
