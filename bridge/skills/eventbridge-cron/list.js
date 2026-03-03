@@ -5,6 +5,7 @@
  */
 const {
   validateUserId,
+  validateEnv,
   listCronRecords,
   extractChannelInfo,
 } = require("./common");
@@ -12,6 +13,7 @@ const {
 async function main() {
   const userId = process.argv[2];
   validateUserId(userId);
+  validateEnv();
 
   // Look up real userId from DynamoDB using channel info
   const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");

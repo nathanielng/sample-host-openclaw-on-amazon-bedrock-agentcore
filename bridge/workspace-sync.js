@@ -147,6 +147,14 @@ async function restoreWorkspace(namespace) {
       const relativePath = obj.Key.slice(prefix.length);
       if (!relativePath || shouldSkip(relativePath)) continue;
 
+      // Validate object size before downloading (uses ListObjectsV2 Size field)
+      if (obj.Size > MAX_FILE_SIZE) {
+        console.warn(
+          `[workspace-sync] Skipping oversized file: ${obj.Key} (${obj.Size} bytes)`,
+        );
+        continue;
+      }
+
       const localFile = path.join(LOCAL_PATH, relativePath);
       const localDir = path.dirname(localFile);
 

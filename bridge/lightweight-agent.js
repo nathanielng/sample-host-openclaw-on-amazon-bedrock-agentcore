@@ -266,7 +266,13 @@ const TOOL_ENV = {
   PATH: process.env.PATH,
   HOME: process.env.HOME || "/root",
   NODE_PATH: process.env.NODE_PATH || "/app/node_modules",
-  NODE_OPTIONS: process.env.NODE_OPTIONS || "",
+  NODE_OPTIONS: (process.env.NODE_OPTIONS || "")
+    .replace(/--inspect[^\s]*/g, "")    // Strip debug inspector
+    .replace(/--require\s+\S+/g, "")     // Strip require injection
+    .replace(/--import\s+\S+/g, "")      // Strip import injection
+    .replace(/-r\s+\S+/g, "")            // Strip short-form require
+    .replace(/\s+/g, " ")                 // Collapse whitespace
+    .trim(),
   AWS_REGION: process.env.AWS_REGION || "us-west-2",
   S3_USER_FILES_BUCKET: process.env.S3_USER_FILES_BUCKET || "",
   EVENTBRIDGE_SCHEDULE_GROUP: process.env.EVENTBRIDGE_SCHEDULE_GROUP || "",
@@ -513,11 +519,20 @@ async function executeWebFetch(url, depth = 0) {
           const redirectUrl = new URL(res.headers.location, url).href;
           const redirectError = validateUrlSafety(redirectUrl);
           if (redirectError) {
+            res.resume();
             resolve(`Error: Redirect blocked — ${redirectError}`);
             return;
           }
+          // DNS rebinding mitigation: validate resolved IPs on redirect targets
+          const redirectParsed = new URL(redirectUrl);
           res.resume();
-          resolve(executeWebFetch(redirectUrl, depth + 1));
+          validateResolvedIps(redirectParsed.hostname).then((ipError) => {
+            if (ipError) {
+              resolve(`Error: Redirect blocked — ${ipError}`);
+              return;
+            }
+            resolve(executeWebFetch(redirectUrl, depth + 1));
+          });
           return;
         }
 

@@ -3,6 +3,7 @@
 from aws_cdk import (
     Stack,
     RemovalPolicy,
+    aws_iam as iam,
     aws_kms as kms,
     aws_secretsmanager as secretsmanager,
     aws_cognito as cognito,
@@ -30,6 +31,36 @@ class SecurityStack(Stack):
             description="CMK for OpenClaw secrets encryption",
             enable_key_rotation=True,
             removal_policy=RemovalPolicy.RETAIN,
+        )
+
+        # Allow CloudWatch Alarms to publish to KMS-encrypted SNS topics
+        self.cmk.add_to_resource_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "kms:Decrypt",
+                    "kms:GenerateDataKey*",
+                ],
+                principals=[
+                    iam.ServicePrincipal("cloudwatch.amazonaws.com"),
+                ],
+                resources=["*"],
+            )
+        )
+
+        # Allow CloudTrail to encrypt log files with the CMK
+        self.cmk.add_to_resource_policy(
+            iam.PolicyStatement(
+                actions=["kms:GenerateDataKey*"],
+                principals=[
+                    iam.ServicePrincipal("cloudtrail.amazonaws.com"),
+                ],
+                resources=["*"],
+                conditions={
+                    "StringEquals": {
+                        "aws:SourceArn": f"arn:aws:cloudtrail:{Stack.of(self).region}:{Stack.of(self).account}:trail/OpenClawSecurity-CloudTrail*",
+                    },
+                },
+            )
         )
 
         # --- Gateway token (auto-generated 64-char) -----------------------
@@ -65,7 +96,8 @@ class SecurityStack(Stack):
         trail_bucket = s3.Bucket(
             self,
             "CloudTrailBucket",
-            encryption=s3.BucketEncryption.S3_MANAGED,
+            encryption=s3.BucketEncryption.KMS,
+            encryption_key=self.cmk,
             enforce_ssl=True,
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
             versioned=True,
@@ -84,6 +116,7 @@ class SecurityStack(Stack):
             self,
             "CloudTrail",
             bucket=trail_bucket,
+            encryption_key=self.cmk,
             send_to_cloud_watch_logs=True,
             cloud_watch_log_group=trail_log_group,
             is_multi_region_trail=False,

@@ -326,6 +326,8 @@ function writeOpenClawConfig() {
         "write", // Local writes don't persist — use S3 skill instead
         "edit", // Local edits are ephemeral — use S3 skill instead
         "apply_patch", // Code patching not needed for chat assistant
+        "exec", // Blocks arbitrary shell execution — prevents /proc reads and credential exfiltration
+        "read", // Blocks local file reads — prevents reading sibling process environ; use s3-user-files
         "browser", // No headless browser in ARM64 container
         "canvas", // No UI rendering in headless chat context
         "cron", // EventBridge handles scheduling, not OpenClaw's built-in cron
@@ -554,12 +556,25 @@ async function init(userId, actorId, channel) {
     // Build scoped env for OpenClaw — excludes container credentials,
     // uses credential_process for scoped S3 access only.
     // Falls back to full process.env if scoped credentials failed.
-    const openclawEnv = scopedCredsAvailable
-      ? scopedCreds.buildOpenClawEnv({
-          credDir: SCOPED_CREDS_DIR,
-          baseEnv: process.env,
-        })
-      : { ...process.env, OPENCLAW_SKIP_CRON: "1" };
+    let openclawEnv;
+    if (scopedCredsAvailable) {
+      openclawEnv = scopedCreds.buildOpenClawEnv({
+        credDir: SCOPED_CREDS_DIR,
+        baseEnv: process.env,
+      });
+    } else {
+      // SECURITY: Never start OpenClaw with full execution role credentials.
+      // Build a safe env that strips ALL AWS credential sources.
+      // OpenClaw will have zero AWS access — tools fail gracefully.
+      console.error(
+        "[contract] WARNING: Scoped credentials failed — starting OpenClaw with zero AWS access",
+      );
+      openclawEnv = scopedCreds.buildOpenClawEnv({
+        credDir: null,
+        baseEnv: process.env,
+      });
+      openclawEnv.OPENCLAW_NO_AWS = "1";
+    }
     openclawProcess = spawn(
       "openclaw",
       ["gateway", "run", "--port", String(OPENCLAW_PORT), "--verbose"],

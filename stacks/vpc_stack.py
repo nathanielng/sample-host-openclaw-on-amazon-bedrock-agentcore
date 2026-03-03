@@ -45,7 +45,7 @@ class VpcStack(Stack):
             self,
             "VpcFlowLogGroup",
             retention=retention_days(log_retention),
-            removal_policy=RemovalPolicy.DESTROY,
+            removal_policy=RemovalPolicy.RETAIN,
         )
         flow_log_role = iam.Role(
             self,

@@ -88,6 +88,7 @@ cron_stack = CronStack(
 observability_stack = ObservabilityStack(
     app,
     "OpenClawObservability",
+    cmk_arn=security_stack.cmk.key_arn,
     env=env,
 )
 
@@ -97,6 +98,7 @@ token_monitoring_stack = TokenMonitoringStack(
     "OpenClawTokenMonitoring",
     invocation_log_group=observability_stack.invocation_log_group,
     alarm_topic=observability_stack.alarm_topic,
+    cmk_arn=security_stack.cmk.key_arn,
     env=env,
 )
 

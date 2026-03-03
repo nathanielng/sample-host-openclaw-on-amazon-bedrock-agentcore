@@ -58,7 +58,7 @@ const FORWARDED_ENV_KEYS = [
  * @param {string} [opts.scheduleGroupArn] - EventBridge schedule group ARN (scopes scheduler access)
  * @returns {string} JSON policy document
  */
-function buildSessionPolicy({ bucket, namespace, cmkArn, eventbridgeRoleArn, identityTableArn, scheduleGroupArn }) {
+function buildSessionPolicy({ bucket, namespace, actorId, cmkArn, eventbridgeRoleArn, identityTableArn, scheduleGroupArn }) {
   if (!namespace || !VALID_NAMESPACE.test(namespace)) {
     throw new Error(
       `Invalid namespace "${namespace}" — must match ${VALID_NAMESPACE}`,
@@ -132,7 +132,7 @@ function buildSessionPolicy({ bucket, namespace, cmkArn, eventbridgeRoleArn, ide
         Action: "scheduler:ListSchedules",
         Resource: scheduleListArn,
       },
-      // DynamoDB identity table (scoped to table + GSI indexes)
+      // DynamoDB identity table — scoped to user's own records via LeadingKeys
       {
         Sid: "DynamoDBIdentity",
         Effect: "Allow",
@@ -144,6 +144,16 @@ function buildSessionPolicy({ bucket, namespace, cmkArn, eventbridgeRoleArn, ide
           "dynamodb:Query",
         ],
         Resource: dynamoResources,
+        ...(actorId ? {
+          Condition: {
+            "ForAllValues:StringLike": {
+              "dynamodb:LeadingKeys": [
+                `USER#${actorId}`,
+                `CHANNEL#${actorId}`,
+              ]
+            }
+          },
+        } : {}),
       },
       // PassRole scoped to EventBridge scheduler role (prevents privilege escalation)
       ...(eventbridgeRoleArn ? [{
@@ -195,8 +205,12 @@ async function createScopedCredentials(namespace, opts = {}) {
     ? `arn:aws:scheduler:${region}:${account}:schedule-group/${scheduleGroup}`
     : undefined;
 
+  // Derive actorId from namespace (namespace uses underscores, actorId uses colons)
+  // e.g. namespace "telegram_123456" -> actorId "telegram:123456"
+  const actorId = namespace.replace(/_/, ":");
+
   const sessionPolicy = buildSessionPolicy({
-    bucket, namespace, cmkArn, eventbridgeRoleArn,
+    bucket, namespace, actorId, cmkArn, eventbridgeRoleArn,
     identityTableArn, scheduleGroupArn,
   });
 
@@ -241,7 +255,7 @@ async function createScopedCredentials(namespace, opts = {}) {
  * @param {string} dir - Directory to write files in
  */
 function writeCredentialFiles(creds, dir) {
-  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 
   const credsJson = {
     Version: 1,
@@ -299,9 +313,13 @@ function buildOpenClawEnv({ credDir, baseEnv = {} }) {
     }
   }
 
-  // Scoped credentials via credential_process
-  env.AWS_CONFIG_FILE = path.join(credDir, "scoped-aws-config");
-  env.AWS_SDK_LOAD_CONFIG = "1";
+  // Scoped credentials via credential_process (when credDir is available)
+  if (credDir) {
+    env.AWS_CONFIG_FILE = path.join(credDir, "scoped-aws-config");
+    env.AWS_SDK_LOAD_CONFIG = "1";
+  }
+  // When credDir is null/undefined, OpenClaw gets zero AWS access —
+  // no credential_process, no credential env vars, tools fail gracefully.
 
   // OpenClaw internal
   env.OPENCLAW_SKIP_CRON = "1";
