@@ -65,7 +65,7 @@ You have the **clawhub-manage** skill to install, uninstall, and list ClawHub co
 - "What skills do I have?" -> use `clawhub-manage` list_skills
 - "Remove transcript skill" -> use `clawhub-manage` uninstall_skill
 
-After install/uninstall, OpenClaw automatically restarts to load the new skill (~2-4 min). During restart, you can still help using built-in tools (web search, files, scheduling).
+After install/uninstall, the new skill will be available on the next session start (after idle timeout or new conversation).
 
 ## Sub-agents
 

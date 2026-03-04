@@ -538,7 +538,8 @@ class TestSkillManagement:
 
     The lightweight agent handles install/uninstall during warm-up mode,
     and OpenClaw handles them after full startup. These tests work in both
-    modes — the bot triggers the clawhub CLI and restarts OpenClaw.
+    modes — the bot triggers the clawhub CLI. Newly installed skills are
+    available on the next session start.
 
     Run with: pytest tests/e2e/bot_test.py -v -k skill_manage
     """

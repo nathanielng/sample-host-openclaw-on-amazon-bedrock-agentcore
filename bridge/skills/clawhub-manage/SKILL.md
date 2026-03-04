@@ -48,7 +48,6 @@ node {baseDir}/list.js
 
 ## Notes
 
-- After install/uninstall, OpenClaw is automatically restarted to load/unload the skill (~2-4 min)
-- During restart, the lightweight agent shim handles messages using built-in tools (web search, file storage, scheduling)
+- After install/uninstall, the skill will be loaded/unloaded on the next session start (after idle timeout or new conversation) (web search, file storage, scheduling)
 - Only valid ClawHub skill names are accepted (letters, numbers, hyphens)
 - Pre-installed skills: jina-reader, deep-research-pro, telegram-compose, transcript, task-decomposer
