@@ -13,7 +13,7 @@ OpenClaw on AgentCore Runtime — a multi-channel AI messaging bot (Telegram, Sl
 - **Channel Ingestion**: Router Lambda behind API Gateway HTTP API (Telegram webhook, Slack Events API, image uploads)
 - **Multimodal**: Image upload support — photos downloaded by Router Lambda, stored in S3, fetched by proxy, sent to Bedrock as multimodal content
 - **Messaging**: OpenClaw (Node.js) — headless mode, messages bridged via WebSocket
-- **Tools & Skills**: Built-in tool groups (full profile) + 5 ClawHub skills + 2 custom skills (S3 user files, EventBridge cron) + 2 built-in shim tools (web_fetch, web_search)
+- **Tools & Skills**: Built-in tool groups (full profile) + 5 ClawHub skills + 3 custom skills (S3 user files, EventBridge cron, ClawHub manage) + 2 built-in shim tools (web_fetch, web_search)
 - **Scheduling**: EventBridge Scheduler for recurring tasks — cron executor Lambda warms sessions and delivers responses to channels
 - **Per-User File Storage**: S3-backed per-user file isolation via custom `s3-user-files` skill
 - **Workspace Persistence**: .openclaw/ directory synced to/from S3 per user
@@ -53,7 +53,7 @@ OpenClaw on AgentCore Runtime — a multi-channel AI messaging bot (Telegram, Sl
   |   -> handoff: once OpenClaw ready, route via WebSocket bridge
   |   -> SIGTERM: save .openclaw/ to S3
   |                       |
-  | lightweight-agent.js  -- warm-up shim (proxy -> Bedrock, 10 tools: s3-user-files, eventbridge-cron, web_fetch, web_search)
+  | lightweight-agent.js  -- warm-up shim (proxy -> Bedrock, 13 tools: s3-user-files, eventbridge-cron, clawhub-manage, web_fetch, web_search)
   | agentcore-proxy.js    (18790) -- OpenAI -> Bedrock ConverseStream
   | OpenClaw Gateway      (18789) -- headless, no channels
   +-----------+-----------+
@@ -112,8 +112,8 @@ openclaw-on-agentcore/
     Dockerfile                    # Container image (node:22-slim, ARM64, clawhub skills)
     entrypoint.sh                 # Startup: configure IPv4, start contract server
     agentcore-contract.js         # AgentCore HTTP contract with hybrid routing (shim + OpenClaw)
-    lightweight-agent.js          # Warm-up agent shim (s3-user-files + eventbridge-cron tools)
-    lightweight-agent.test.js     # Lightweight agent unit tests (node:test, 70 tests)
+    lightweight-agent.js          # Warm-up agent shim (s3-user-files + eventbridge-cron + clawhub-manage tools)
+    lightweight-agent.test.js     # Lightweight agent unit tests (node:test, 73 tests)
     agentcore-proxy.js            # OpenAI -> Bedrock ConverseStream adapter + Identity + multimodal images
     image-support.test.js         # Image support unit tests (node:test)
     content-extraction.test.js    # Content block extraction tests (node:test)
@@ -133,6 +133,11 @@ openclaw-on-agentcore/
         common.js                 # Shared utilities (schedule group, DynamoDB helpers)
         create.js / update.js     # Create/update EventBridge schedules
         list.js / delete.js       # List/delete schedules
+      clawhub-manage/             # ClawHub skill installer (install/uninstall/list)
+        SKILL.md                  # OpenClaw skill manifest
+        common.js                 # Skill name validation
+        install.js / uninstall.js # Install/uninstall ClawHub skills
+        list.js                   # List installed skills
   lambda/
     token_metrics/index.py        # Bedrock log -> DynamoDB + CloudWatch metrics
     router/index.py               # Webhook router (Telegram + Slack, image uploads)
@@ -329,7 +334,7 @@ aws dynamodb scan --table-name openclaw-identity --region $CDK_DEFAULT_REGION
    - Restore `.openclaw/` from S3 via `workspace-sync.js` in background
    - Start credential refresh timer (45 min interval)
    - Wait for proxy only (~5s)
-4. **Warm-up phase** (t=~10s to ~2-4min): `lightweight-agent.js` handles messages via proxy -> Bedrock (supports s3-user-files, eventbridge-cron, web_fetch, web_search tools)
+4. **Warm-up phase** (t=~10s to ~2-4min): `lightweight-agent.js` handles messages via proxy -> Bedrock (supports s3-user-files, eventbridge-cron, clawhub-manage, web_fetch, web_search tools)
 5. **Handoff** (~2-4min): OpenClaw becomes ready, all subsequent messages route via WebSocket bridge
 6. **After handoff**: Full OpenClaw features — `web_fetch`, `web_search` (built-in), 5 ClawHub skills (Jina reader, deep-research-pro, etc.), sub-agent support, session management
 7. **`action: warmup`**: Triggers init only; returns `{ready: true}` when OpenClaw is ready (used by cron Lambda to pre-warm sessions)
@@ -414,6 +419,7 @@ Only the **first channel identity** needs to be allowlisted. When a user binds a
 - **Session recreation**: InvokeAgentRuntime with terminated session creates new microVM; workspace restored on init
 - **VPC endpoints**: `bedrock-agentcore-runtime` endpoint not available in all regions
 - **Endpoint version drift**: `CfnRuntimeEndpoint` must set `agent_runtime_version=self.runtime.attr_agent_runtime_version`
+- **CDK L1 property gaps**: workload_identity_details and request_header_configuration on CfnRuntime are not yet supported in the installed CDK version — TODOs in agentcore_stack.py
 
 ### IAM / Bedrock
 - **Cross-region inference**: Model `global.anthropic.claude-opus-4-6-v1` uses a global cross-region inference profile that routes to any available region — IAM uses `arn:aws:bedrock:*::foundation-model/*` and inference-profile wildcards
@@ -432,7 +438,7 @@ Only the **first channel identity** needs to be allowlisted. When a user binds a
 - Startup takes ~2-4 minutes (plugin registration); lightweight agent shim handles messages during this time
 - Correct start command: `openclaw gateway run --port 18789 --verbose` (no `--bind lan` — localhost binding sufficient since both processes run in the same container)
 - **Tool profile**: Uses `"full"` profile with a deny list. Do NOT use `"basic"` (undocumented, may disable web tools). Documented profiles: `minimal`, `coding`, `messaging`, `full`
-- **Deny list**: `["write", "edit", "apply_patch", "browser", "canvas", "cron", "gateway"]` — local writes use S3 skill, no browser/UI in container, EventBridge replaces built-in cron
+- **Deny list**: `["write", "edit", "apply_patch", "read", "browser", "canvas", "cron", "gateway"]` — local writes use S3 skill, `read` blocked to prevent credential reads, no browser/UI in container, EventBridge replaces built-in cron. `exec` is NOT denied — skills like `clawhub-manage` need it; scoped STS credentials limit blast radius
 - **Sub-agent sandbox**: Must be `"off"` — no Docker inside AgentCore microVMs. MicroVMs already provide per-user isolation
 - **Sub-agent model**: Configurable via `SUBAGENT_BEDROCK_MODEL_ID` env var (from `subagent_model_id` in cdk.json). Empty = use same as main model. Subagents use a distinct model name (`bedrock-agentcore-subagent`) so the proxy can detect and count them separately
 - **`skipBootstrap` removed**: No longer a valid config key — OpenClaw rejects unknown keys and exits with code 1
@@ -463,6 +469,7 @@ Only the **first channel identity** needs to be allowlisted. When a user binds a
 - **Cross-channel binding**: "link accounts" generates 6-char code in DynamoDB with 10-min TTL
 - **Image uploads**: Telegram photos and Slack file attachments (JPEG, PNG, GIF, WebP, max 3.75 MB) are downloaded by the Router Lambda, uploaded to S3 under `{namespace}/_uploads/`, and passed to AgentCore as a structured message `{text, images[{s3Key, contentType}]}`
 - **Telegram captions**: `message.get("text", "") or message.get("caption", "")` — photos use `caption`, not `text`
+- **Secret cache TTL**: Secrets Manager values cached for 15 minutes (was indefinite). Rotated secrets reflected within 15 min without container restart
 
 ### Image Upload Flow
 - **Router Lambda** downloads image from channel API (Telegram `getFile` / Slack `url_private_download`), uploads to S3 `{namespace}/_uploads/img_{ts}_{hex}.{ext}`
@@ -499,7 +506,9 @@ Only the **first channel identity** needs to be allowlisted. When a user binds a
 - **Credential files**: Scoped credentials written to `/tmp/scoped-creds/` in `credential_process` format. OpenClaw uses `AWS_CONFIG_FILE` + `AWS_SDK_LOAD_CONFIG=1` to pick them up
 - **OpenClaw env isolation**: OpenClaw spawned with explicit env that excludes `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`, and `AWS_CONTAINER_CREDENTIALS_FULL_URI`
 - **Credential refresh**: 45-minute interval timer re-assumes the role and updates credential files (STS self-assume max duration is 1 hour)
-- **Graceful fallback**: If `EXECUTION_ROLE_ARN` is not set or STS fails, falls back to full execution role credentials with a warning log
+- **DynamoDB per-user scoping**: Session policy includes dynamodb:LeadingKeys condition restricting access to USER#{actorId} and CHANNEL#{actorId} prefixes only
+- **Trust policy condition**: STS self-assume trust requires sts:RoleSessionName matching "scoped-*" prefix, preventing unconditioned re-assumption
+- **Zero-access fallback**: If `EXECUTION_ROLE_ARN` is not set or STS fails, OpenClaw starts with zero AWS access (all credential env vars stripped). Tools will fail gracefully but no cross-user data access is possible
 - **Proxy keeps full credentials**: The proxy process is trusted code and retains full execution role credentials for Bedrock, Cognito, and S3 image access (with application-level namespace enforcement)
 
 ## Workflow Conventions

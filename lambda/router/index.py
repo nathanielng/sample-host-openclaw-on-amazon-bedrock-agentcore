@@ -58,22 +58,26 @@ s3_client = boto3.client("s3", region_name=AWS_REGION)
 
 USER_FILES_BUCKET = os.environ.get("USER_FILES_BUCKET", "")
 
-# --- Token cache (survives across warm invocations) ---
-_token_cache = {}
+# --- Token cache (survives across warm invocations, 15-min TTL) ---
+_SECRET_CACHE_TTL_SECONDS = 900  # 15 minutes
+_token_cache = {}  # {secret_id: (value, fetched_at)}
 
 BIND_CODE_TTL_SECONDS = 600  # 10 minutes
 
 
 def _get_secret(secret_id):
-    """Fetch a secret value, cached for the lifetime of the Lambda container."""
-    if secret_id in _token_cache:
-        return _token_cache[secret_id]
+    """Fetch a secret value, cached with a 15-minute TTL."""
+    cached = _token_cache.get(secret_id)
+    if cached:
+        value, fetched_at = cached
+        if time.time() - fetched_at < _SECRET_CACHE_TTL_SECONDS:
+            return value
     if not secret_id:
         return ""
     try:
         resp = secrets_client.get_secret_value(SecretId=secret_id)
         value = resp["SecretString"]
-        _token_cache[secret_id] = value
+        _token_cache[secret_id] = (value, time.time())
         return value
     except Exception as e:
         logger.warning("Failed to fetch secret %s: %s", secret_id, e)
@@ -322,8 +326,8 @@ def get_or_create_session(user_id):
 # ---------------------------------------------------------------------------
 
 def create_bind_code(user_id):
-    """Generate a 6-char bind code and store it in DynamoDB with TTL."""
-    code = uuid.uuid4().hex[:6].upper()
+    """Generate an 8-char bind code and store it in DynamoDB with TTL."""
+    code = uuid.uuid4().hex[:8].upper()  # 16^8 = 4.3B keyspace
     ttl = int(time.time()) + BIND_CODE_TTL_SECONDS
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -413,19 +417,25 @@ def invoke_agent_runtime(session_id, user_id, actor_id, channel, message):
             agentRuntimeArn=AGENTCORE_RUNTIME_ARN,
             qualifier=AGENTCORE_QUALIFIER,
             runtimeSessionId=session_id,
+            runtimeUserId=actor_id,
             payload=payload,
             contentType="application/json",
             accept="application/json",
         )
         status_code = resp.get("statusCode")
         logger.info("AgentCore response status: %s", status_code)
+        MAX_RESPONSE_BYTES = 500_000  # 500 KB — prevents OOM from large subagent responses
         body = resp.get("response")
         if body:
             if hasattr(body, "read"):
-                body_text = body.read().decode("utf-8")
+                body_bytes = body.read(MAX_RESPONSE_BYTES + 1)
+                body_text = body_bytes.decode("utf-8", errors="replace")
+                if len(body_bytes) > MAX_RESPONSE_BYTES:
+                    logger.warning("AgentCore response truncated at %d bytes", MAX_RESPONSE_BYTES)
+                    body_text = body_text[:MAX_RESPONSE_BYTES]
             else:
-                body_text = str(body)
-            logger.info("AgentCore response body (first 2000 chars): %s", body_text[:2000])
+                body_text = str(body)[:MAX_RESPONSE_BYTES]
+            logger.info("AgentCore response (len=%d, first 200 chars): %s", len(body_text), body_text[:200])
             try:
                 return json.loads(body_text)
             except json.JSONDecodeError:
@@ -583,8 +593,14 @@ def _markdown_to_telegram_html(text):
     # Strikethrough: ~~text~~
     text = re.sub(r"~~(.+?)~~", r"<s>\1</s>", text)
 
-    # Links: [text](url)
-    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', text)
+    # Links: [text](url) — allowlist safe URL schemes to prevent javascript:/data: injection
+    def _safe_link(m):
+        link_text, link_url = m.group(1), m.group(2)
+        if re.match(r'^(https?://|tg://|mailto:)', link_url):
+            return f'<a href="{link_url}">{link_text}</a>'
+        return m.group(0)  # leave non-http links as plain text
+
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", _safe_link, text)
 
     # Blockquotes: > text (at line start)
     text = re.sub(r"^&gt;\s?(.+)$", r"<blockquote>\1</blockquote>", text, flags=re.MULTILINE)
@@ -859,13 +875,13 @@ def _build_structured_message(text, s3_key, content_type):
 # ---------------------------------------------------------------------------
 
 def _is_bind_command(text):
-    """Check if the message is a bind-code command (e.g. 'link ABC123')."""
+    """Check if the message is a bind-code command (e.g. 'link ABCD1234')."""
     if not text:
         return False, ""
     parts = text.strip().split()
     if len(parts) == 2 and parts[0].lower() in ("link", "bind"):
         code = parts[1].strip().upper()
-        if len(code) == 6 and code.isalnum():
+        if len(code) == 8 and code.isalnum():
             return True, code
     return False, ""
 
@@ -897,10 +913,25 @@ def handle_telegram(body):
         logger.info("Telegram: ignoring non-text/non-image or missing-user message")
         return
 
+    if len(user_id_tg) > 128:
+        logger.warning("Telegram channel_user_id too long (%d chars), rejecting", len(user_id_tg))
+        return
+
     token = _get_telegram_token()
 
-    # Resolve user identity
+    # Handle bind commands BEFORE allowlist check — cross-channel binding
+    # bypasses the allowlist since it links to an already-approved user.
     actor_id = f"telegram:{user_id_tg}"
+    is_bind, code = _is_bind_command(text)
+    if is_bind:
+        bound_user_id, success = redeem_bind_code(code, "telegram", user_id_tg, display_name)
+        if success:
+            send_telegram_message(chat_id, "Accounts linked successfully! Your sessions are now unified.", token)
+        else:
+            send_telegram_message(chat_id, "Invalid or expired link code. Please try again.", token)
+        return
+
+    # Resolve user identity
     resolved_user_id, is_new = resolve_user("telegram", user_id_tg, display_name)
 
     if resolved_user_id is None:
@@ -913,7 +944,7 @@ def handle_telegram(body):
         )
         return
 
-    # Handle bind commands (text-only)
+    # Handle link-accounts command (generate bind code for existing users)
     if _is_link_command(text):
         code = create_bind_code(resolved_user_id)
         send_telegram_message(
@@ -922,15 +953,6 @@ def handle_telegram(body):
             f"by typing: `link {code}`",
             token,
         )
-        return
-
-    is_bind, code = _is_bind_command(text)
-    if is_bind:
-        bound_user_id, success = redeem_bind_code(code, "telegram", user_id_tg, display_name)
-        if success:
-            send_telegram_message(chat_id, "Accounts linked successfully! Your sessions are now unified.", token)
-        else:
-            send_telegram_message(chat_id, "Invalid or expired link code. Please try again.", token)
         return
 
     # Send typing indicator
@@ -1024,14 +1046,29 @@ def handle_slack(body, headers=None):
     if not slack_user_id or not channel_id or (not text and not has_image):
         return {"statusCode": 200, "body": "ok"}
 
+    if len(slack_user_id) > 128:
+        logger.warning("Slack channel_user_id too long (%d chars), rejecting", len(slack_user_id))
+        return {"statusCode": 400, "body": "Invalid user ID"}
+
     # Ignore bot messages
     if event.get("bot_id"):
         return {"statusCode": 200, "body": "ok"}
 
     bot_token, _ = _get_slack_tokens()
 
-    # Resolve user identity
+    # Handle bind commands BEFORE allowlist check — cross-channel binding
+    # bypasses the allowlist since it links to an already-approved user.
     actor_id = f"slack:{slack_user_id}"
+    is_bind, code = _is_bind_command(text)
+    if is_bind:
+        bound_user_id, success = redeem_bind_code(code, "slack", slack_user_id)
+        if success:
+            send_slack_message(channel_id, "Accounts linked successfully! Your sessions are now unified.", bot_token)
+        else:
+            send_slack_message(channel_id, "Invalid or expired link code. Please try again.", bot_token)
+        return {"statusCode": 200, "body": "ok"}
+
+    # Resolve user identity
     resolved_user_id, is_new = resolve_user("slack", slack_user_id)
 
     if resolved_user_id is None:
@@ -1044,7 +1081,7 @@ def handle_slack(body, headers=None):
         )
         return {"statusCode": 200, "body": "ok"}
 
-    # Handle bind commands (text-only)
+    # Handle link-accounts command (generate bind code for existing users)
     if _is_link_command(text):
         code = create_bind_code(resolved_user_id)
         send_slack_message(
@@ -1053,15 +1090,6 @@ def handle_slack(body, headers=None):
             f"by typing: `link {code}`",
             bot_token,
         )
-        return {"statusCode": 200, "body": "ok"}
-
-    is_bind, code = _is_bind_command(text)
-    if is_bind:
-        bound_user_id, success = redeem_bind_code(code, "slack", slack_user_id)
-        if success:
-            send_slack_message(channel_id, "Accounts linked successfully! Your sessions are now unified.", bot_token)
-        else:
-            send_slack_message(channel_id, "Invalid or expired link code. Please try again.", bot_token)
         return {"statusCode": 200, "body": "ok"}
 
     # Build message payload (structured if image, plain string if text-only)
@@ -1163,15 +1191,21 @@ def handler(event, context):
         return {"statusCode": 200, "body": "ok"}
 
     elif path.endswith("/webhook/slack"):
-        # Slack requires immediate response for url_verification
-        # (url_verification is not signed — it's part of initial app setup)
+        # Slack url_verification — only allowed during initial setup
         try:
             event_data = json.loads(body) if isinstance(body, str) else body
             if event_data.get("type") == "url_verification":
+                if os.environ.get("SLACK_VERIFIED") == "true":
+                    logger.warning("Slack url_verification rejected — already verified")
+                    return {"statusCode": 403, "body": "Already verified"}
+                # Validate challenge format before echoing (prevent injection)
+                challenge = str(event_data.get("challenge", ""))
+                if not re.match(r'^[a-zA-Z0-9_\-\.]{1,100}$', challenge):
+                    return {"statusCode": 400, "body": "Invalid challenge format"}
                 return {
                     "statusCode": 200,
                     "headers": {"Content-Type": "application/json"},
-                    "body": json.dumps({"challenge": event_data["challenge"]}),
+                    "body": json.dumps({"challenge": challenge}),
                 }
         except (json.JSONDecodeError, TypeError):
             pass

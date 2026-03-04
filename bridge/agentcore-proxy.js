@@ -63,11 +63,27 @@ function extractSessionMetadata(parsed, headers) {
   let sessionId = "";
   let idSource = "none";
 
-  // 0. Check environment variables (set by contract server per user session)
-  if (process.env.USER_ID) {
+  // 0. Check shared identity file (updated by contract server on each message,
+  //    supports cross-channel identity changes for bound users). Falls back to
+  //    env vars if the file doesn't exist or can't be read.
+  try {
+    const identity = JSON.parse(
+      fs.readFileSync("/tmp/current-identity.json", "utf-8"),
+    );
+    if (identity.actorId) {
+      actorId = identity.actorId;
+      channel = identity.channel || "unknown";
+      idSource = "identity-file";
+    }
+  } catch (_) {
+    // File not yet written or unreadable — fall back to env vars
+  }
+  if (!actorId && process.env.USER_ID) {
     actorId = process.env.USER_ID;
     channel = process.env.CHANNEL || "unknown";
     idSource = "environment";
+  }
+  if (actorId && (idSource === "identity-file" || idSource === "environment")) {
     // Generate stable session ID for this user
     const key = `${actorId}:${channel}`;
     if (!sessionMap.has(key)) {
@@ -1344,10 +1360,8 @@ const server = http.createServer(async (req, res) => {
         subagent_model: SUBAGENT_BEDROCK_MODEL_ID,
         subagent_model_name: SUBAGENT_MODEL_NAME,
         cognito: COGNITO_USER_POOL_ID ? "configured" : "disabled",
-        s3_bucket: process.env.S3_USER_FILES_BUCKET || "not configured",
         total_requests: chatRequestCount,
         subagent_requests: subagentRequestCount,
-        last_identity: lastIdentityDiag,
         installed_skills: installedSkills,
         s3_skill_exists: s3SkillExists,
       }),
@@ -1561,9 +1575,9 @@ const server = http.createServer(async (req, res) => {
   res.end(JSON.stringify({ error: "Not found" }));
 });
 
-server.listen(PORT, "0.0.0.0", () => {
+server.listen(PORT, "127.0.0.1", () => {
   console.log(
-    `[proxy] Bedrock proxy adapter listening on http://0.0.0.0:${PORT} (model: ${MODEL_ID})`,
+    `[proxy] Bedrock proxy adapter listening on http://127.0.0.1:${PORT} (model: ${MODEL_ID})`,
   );
   console.log(
     `[proxy] Cognito identity: ${COGNITO_USER_POOL_ID ? `pool=${COGNITO_USER_POOL_ID} client=${COGNITO_CLIENT_ID}` : "disabled"}`,

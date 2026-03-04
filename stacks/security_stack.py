@@ -3,6 +3,7 @@
 from aws_cdk import (
     Stack,
     RemovalPolicy,
+    aws_iam as iam,
     aws_kms as kms,
     aws_secretsmanager as secretsmanager,
     aws_cognito as cognito,
@@ -31,6 +32,21 @@ class SecurityStack(Stack):
             enable_key_rotation=True,
             removal_policy=RemovalPolicy.RETAIN,
         )
+
+        # Allow CloudWatch Alarms to publish to KMS-encrypted SNS topics
+        self.cmk.add_to_resource_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "kms:Decrypt",
+                    "kms:GenerateDataKey*",
+                ],
+                principals=[
+                    iam.ServicePrincipal("cloudwatch.amazonaws.com"),
+                ],
+                resources=["*"],
+            )
+        )
+
 
         # --- Gateway token (auto-generated 64-char) -----------------------
         self.gateway_token_secret = secretsmanager.Secret(

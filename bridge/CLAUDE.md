@@ -57,14 +57,29 @@ The built-in cron scheduler is replaced by Amazon EventBridge Scheduler, which i
 
 You have the **s3-user-files** skill for reading and writing files in the user's persistent storage. Files survive across sessions.
 
+## Installing More Skills
+
+You have the **clawhub-manage** skill to install, uninstall, and list ClawHub community skills. When a user asks to install or add a skill, use this skill — do NOT say it's not possible or that exec is blocked.
+
+- "Install baidu-search" -> use `clawhub-manage` install_skill
+- "What skills do I have?" -> use `clawhub-manage` list_skills
+- "Remove transcript skill" -> use `clawhub-manage` uninstall_skill
+
+After install/uninstall, the new skill will be available on the next session start (after idle timeout or new conversation).
+
 ## Sub-agents
 
 Skills like `deep-research-pro` and `task-decomposer` can spawn sub-agents for parallel work. Sub-agents use a distinct model name (`bedrock-agentcore-subagent`) routed via `SUBAGENT_BEDROCK_MODEL_ID` env var (defaults to main model). The proxy detects and counts subagent requests separately. Sandbox is disabled — AgentCore microVMs provide per-user isolation.
 
 ## Tool Profile
 
-The agent runs with OpenClaw's **full** tool profile. The following tools are denied (not useful in this context):
+The agent runs with OpenClaw's **full** tool profile. **`Bash` is available** — use it to run skill scripts (e.g., `node /skills/clawhub-manage/install.js baidu-search`).
+
+The following tools are **denied** (not useful in this context):
 - `write`, `edit`, `apply_patch` — local filesystem writes don't persist; use `s3-user-files` instead
+- `read` — blocked to prevent reading sibling process credentials; use `s3-user-files` for file operations
 - `browser`, `canvas` — no headless browser or UI rendering available
 - `cron` — EventBridge handles scheduling instead of OpenClaw's built-in cron
 - `gateway` — admin tool, not needed for end users
+
+**`exec` is available** — skills like `clawhub-manage` use it to run node scripts. Scoped STS credentials ensure only the user's S3 namespace is accessible.

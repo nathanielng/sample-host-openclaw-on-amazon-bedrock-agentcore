@@ -59,7 +59,12 @@ class AgentCoreStack(Stack):
             "AgentRuntimeSecurityGroup",
             vpc=vpc,
             description="AgentCore Runtime container security group",
-            allow_all_outbound=True,
+            allow_all_outbound=False,
+        )
+        self.agent_sg.add_egress_rule(
+            peer=ec2.Peer.any_ipv4(),
+            connection=ec2.Port.tcp(443),
+            description="HTTPS to VPC endpoints and internet (web_fetch/web_search tools)",
         )
         self.agent_sg.add_ingress_rule(
             peer=ec2.Peer.ipv4(vpc.vpc_cidr_block),
@@ -99,7 +104,8 @@ class AgentCoreStack(Stack):
             )
         )
 
-        # Secrets Manager (gateway token, channel tokens, Cognito secret)
+        # Secrets Manager — scoped to the 2 secrets the container actually needs
+        # (gateway token for WebSocket auth, Cognito secret for identity derivation)
         self.execution_role.add_to_policy(
             iam.PolicyStatement(
                 actions=[
@@ -107,7 +113,8 @@ class AgentCoreStack(Stack):
                     "secretsmanager:DescribeSecret",
                 ],
                 resources=[
-                    f"arn:aws:secretsmanager:{region}:{account}:secret:openclaw/*",
+                    f"arn:aws:secretsmanager:{region}:{account}:secret:openclaw/gateway-token-*",
+                    f"arn:aws:secretsmanager:{region}:{account}:secret:openclaw/cognito-password-secret-*",
                 ],
             )
         )
@@ -150,17 +157,49 @@ class AgentCoreStack(Stack):
             iam.PolicyStatement(
                 actions=["sts:AssumeRole"],
                 principals=[iam.ArnPrincipal(execution_role_arn_str)],
+                conditions={
+                    "StringLike": {
+                        "sts:RoleSessionName": "scoped-*"
+                    }
+                },
             )
         )
 
-        # CloudWatch Logs + Metrics + X-Ray
+        # CloudWatch Logs — scoped to /openclaw/ log group prefix
         self.execution_role.add_to_policy(
             iam.PolicyStatement(
                 actions=[
                     "logs:CreateLogGroup",
                     "logs:CreateLogStream",
                     "logs:PutLogEvents",
-                    "cloudwatch:PutMetricData",
+                ],
+                resources=[
+                    f"arn:aws:logs:{region}:{account}:log-group:/openclaw/*",
+                    f"arn:aws:logs:{region}:{account}:log-group:/openclaw/*:*",
+                ],
+            )
+        )
+
+        # CloudWatch Metrics — namespace condition prevents alarm falsification
+        self.execution_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["cloudwatch:PutMetricData"],
+                resources=["*"],
+                conditions={
+                    "StringEquals": {
+                        "cloudwatch:namespace": [
+                            "OpenClaw/AgentCore",
+                            "OpenClaw/TokenUsage",
+                        ]
+                    }
+                },
+            )
+        )
+
+        # X-Ray tracing
+        self.execution_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=[
                     "xray:PutTraceSegments",
                     "xray:PutTelemetryRecords",
                 ],
@@ -191,7 +230,7 @@ class AgentCoreStack(Stack):
                 ),
             ],
             enforce_ssl=True,
-            versioned=False,
+            versioned=True,
         )
 
         # S3 per-user file storage permissions
@@ -226,6 +265,18 @@ class AgentCoreStack(Stack):
                     security_groups=[self.agent_sg.security_group_id],
                 ),
             ),
+            # QW1/QW2: workload_identity_details and request_header_configuration
+            # are not yet available in the installed CDK L1 construct version.
+            # Uncomment when aws-cdk-lib is updated with these CfnRuntime properties:
+            # workload_identity_details=agentcore.CfnRuntime.WorkloadIdentityDetailsProperty(
+            #     workload_identity_arn=self.workload_identity.attr_workload_identity_arn,
+            # ),
+            # request_header_configuration=agentcore.CfnRuntime.RequestHeaderConfigurationProperty(
+            #     request_header_allowlist=[
+            #         "x-bedrock-agentcore-runtime-session-id",
+            #         "Authorization",
+            #     ]
+            # ),
             role_arn=self.execution_role.role_arn,
             environment_variables={
                 "AWS_REGION": region,
@@ -307,8 +358,11 @@ class AgentCoreStack(Stack):
                     applies_to=[
                         "Resource::arn:aws:bedrock:*::foundation-model/*",
                         f"Resource::arn:aws:bedrock:{region}:{account}:inference-profile/*",
-                        f"Resource::arn:aws:secretsmanager:{region}:{account}:secret:openclaw/*",
+                        f"Resource::arn:aws:secretsmanager:{region}:{account}:secret:openclaw/gateway-token-*",
+                        f"Resource::arn:aws:secretsmanager:{region}:{account}:secret:openclaw/cognito-password-secret-*",
                         "Resource::*",
+                        f"Resource::arn:aws:logs:{region}:{account}:log-group:/openclaw/*",
+                        f"Resource::arn:aws:logs:{region}:{account}:log-group:/openclaw/*:*",
                         # S3 per-user file storage bucket (grant_read_write wildcards)
                         "Action::s3:Abort*",
                         "Action::s3:DeleteObject*",

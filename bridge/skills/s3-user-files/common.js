@@ -18,7 +18,14 @@ function sanitize(str) {
   while (result.includes("..")) {
     result = result.replace(/\.\./g, "");
   }
-  return result.replace(/[^a-zA-Z0-9_\-.]/g, "_").slice(0, 256);
+  result = result.replace(/[^a-zA-Z0-9_\-.]/g, "_").slice(0, 256);
+  // Reject leading/trailing dots (hidden files, path traversal)
+  if (result.startsWith(".") || result.endsWith(".")) {
+    throw new Error(
+      `Invalid filename: "${result}" — leading/trailing dots not allowed`,
+    );
+  }
+  return result;
 }
 
 /**

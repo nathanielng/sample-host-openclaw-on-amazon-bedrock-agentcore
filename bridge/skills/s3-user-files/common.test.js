@@ -48,8 +48,17 @@ describe("sanitize", () => {
   it("iteratively removes nested dot-dot sequences", () => {
     // "......" (6 dots) -> first pass removes 3 pairs -> ""
     assert.equal(sanitize("......"), "");
-    // "....." (5 dots) -> first pass removes 2 pairs -> "." -> no more ".."
-    assert.equal(sanitize("....."), ".");
+    // "....." (5 dots) -> first pass removes 2 pairs -> "." -> rejected (leading dot)
+    assert.throws(() => sanitize("....."), /leading\/trailing dots not allowed/);
+  });
+
+  it("rejects leading dots in filenames", () => {
+    assert.throws(() => sanitize(".hidden"), /leading\/trailing dots not allowed/);
+    assert.throws(() => sanitize(".env"), /leading\/trailing dots not allowed/);
+  });
+
+  it("rejects trailing dots in filenames", () => {
+    assert.throws(() => sanitize("file."), /leading\/trailing dots not allowed/);
   });
 });
 

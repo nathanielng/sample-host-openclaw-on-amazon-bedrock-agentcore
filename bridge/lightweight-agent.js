@@ -34,9 +34,12 @@ const SYSTEM_PROMPT =
   "- **Web search**: Search the web for current information using web_search\n" +
   "- **Web fetch**: Read any web page content using web_fetch\n" +
   "- **File storage**: Read, write, list, and delete files in user's persistent S3 storage\n" +
-  "- **Scheduling**: Create, list, update, and delete recurring cron schedules via EventBridge\n\n" +
+  "- **Scheduling**: Create, list, update, and delete recurring cron schedules via EventBridge\n" +
+  "- **Skill management**: Install, uninstall, and list ClawHub community skills\n\n" +
   "When users ask for reminders, scheduled tasks, or recurring actions, use the scheduling tools. " +
   "Always ask for timezone if not known.\n\n" +
+  "When users ask to install or add a skill, use install_skill. " +
+  "Do NOT say exec or shell commands are blocked — use the skill management tools instead.\n\n" +
   "After full startup completes (~2-4 minutes), you gain additional capabilities: " +
   "deep research (multi-step analysis), YouTube transcripts, rich Telegram formatting, " +
   "task decomposition with sub-agents, and enhanced web reading via Jina.";
@@ -221,6 +224,56 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "install_skill",
+      description:
+        "Install a community skill from the ClawHub marketplace. " +
+        "The skill will be available after OpenClaw restarts (next session or idle timeout).",
+      parameters: {
+        type: "object",
+        properties: {
+          skill_name: {
+            type: "string",
+            description:
+              "The skill name from ClawHub (e.g. 'baidu-search', 'reddit-readonly')",
+          },
+        },
+        required: ["skill_name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "uninstall_skill",
+      description: "Remove a previously installed ClawHub community skill.",
+      parameters: {
+        type: "object",
+        properties: {
+          skill_name: {
+            type: "string",
+            description: "The skill name to remove",
+          },
+        },
+        required: ["skill_name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_skills",
+      description:
+        "List all installed ClawHub community skills in the container.",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "web_fetch",
       description:
         "Fetch a web page and return its content as plain text. " +
@@ -266,7 +319,13 @@ const TOOL_ENV = {
   PATH: process.env.PATH,
   HOME: process.env.HOME || "/root",
   NODE_PATH: process.env.NODE_PATH || "/app/node_modules",
-  NODE_OPTIONS: process.env.NODE_OPTIONS || "",
+  NODE_OPTIONS: (process.env.NODE_OPTIONS || "")
+    .replace(/--inspect[^\s]*/g, "")    // Strip debug inspector
+    .replace(/--require\s+\S+/g, "")     // Strip require injection
+    .replace(/--import\s+\S+/g, "")      // Strip import injection
+    .replace(/-r\s+\S+/g, "")            // Strip short-form require
+    .replace(/\s+/g, " ")                 // Collapse whitespace
+    .trim(),
   AWS_REGION: process.env.AWS_REGION || "us-west-2",
   S3_USER_FILES_BUCKET: process.env.S3_USER_FILES_BUCKET || "",
   EVENTBRIDGE_SCHEDULE_GROUP: process.env.EVENTBRIDGE_SCHEDULE_GROUP || "",
@@ -284,6 +343,9 @@ const SCRIPT_MAP = {
   list_schedules: "/skills/eventbridge-cron/list.js",
   update_schedule: "/skills/eventbridge-cron/update.js",
   delete_schedule: "/skills/eventbridge-cron/delete.js",
+  install_skill: "/skills/clawhub-manage/install.js",
+  uninstall_skill: "/skills/clawhub-manage/uninstall.js",
+  list_skills: "/skills/clawhub-manage/list.js",
   web_fetch: null, // In-process tool — no child process script
   web_search: null, // In-process tool — no child process script
 };
@@ -513,11 +575,20 @@ async function executeWebFetch(url, depth = 0) {
           const redirectUrl = new URL(res.headers.location, url).href;
           const redirectError = validateUrlSafety(redirectUrl);
           if (redirectError) {
+            res.resume();
             resolve(`Error: Redirect blocked — ${redirectError}`);
             return;
           }
+          // DNS rebinding mitigation: validate resolved IPs on redirect targets
+          const redirectParsed = new URL(redirectUrl);
           res.resume();
-          resolve(executeWebFetch(redirectUrl, depth + 1));
+          validateResolvedIps(redirectParsed.hostname).then((ipError) => {
+            if (ipError) {
+              resolve(`Error: Redirect blocked — ${ipError}`);
+              return;
+            }
+            resolve(executeWebFetch(redirectUrl, depth + 1));
+          });
           return;
         }
 
@@ -737,6 +808,13 @@ function buildToolArgs(toolName, args, userId) {
     }
     case "delete_schedule":
       return [script, userId, args.schedule_id || ""];
+    // clawhub-manage tools (no userId needed)
+    case "install_skill":
+      return [script, args.skill_name || ""];
+    case "uninstall_skill":
+      return [script, args.skill_name || ""];
+    case "list_skills":
+      return [script];
     default:
       return null;
   }

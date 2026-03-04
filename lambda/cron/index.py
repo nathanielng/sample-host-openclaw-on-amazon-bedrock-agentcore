@@ -44,8 +44,9 @@ agentcore_client = boto3.client(
 )
 secrets_client = boto3.client("secretsmanager", region_name=AWS_REGION)
 
-# --- Token cache (survives across warm invocations) ---
-_token_cache = {}
+# --- Token cache (survives across warm invocations, 15-min TTL) ---
+_SECRET_CACHE_TTL_SECONDS = 900  # 15 minutes
+_token_cache = {}  # {secret_id: (value, fetched_at)}
 
 # --- Constants ---
 WARMUP_POLL_INTERVAL_SECONDS = 15
@@ -53,15 +54,18 @@ WARMUP_MAX_WAIT_SECONDS = 300
 
 
 def _get_secret(secret_id):
-    """Fetch a secret value, cached for the lifetime of the Lambda container."""
-    if secret_id in _token_cache:
-        return _token_cache[secret_id]
+    """Fetch a secret value, cached with a 15-minute TTL."""
+    cached = _token_cache.get(secret_id)
+    if cached:
+        value, fetched_at = cached
+        if time.time() - fetched_at < _SECRET_CACHE_TTL_SECONDS:
+            return value
     if not secret_id:
         return ""
     try:
         resp = secrets_client.get_secret_value(SecretId=secret_id)
         value = resp["SecretString"]
-        _token_cache[secret_id] = value
+        _token_cache[secret_id] = (value, time.time())
         return value
     except Exception as e:
         logger.warning("Failed to fetch secret %s: %s", secret_id, e)
@@ -155,16 +159,22 @@ def invoke_agentcore(session_id, action, user_id, actor_id, channel, message=Non
             agentRuntimeArn=AGENTCORE_RUNTIME_ARN,
             qualifier=AGENTCORE_QUALIFIER,
             runtimeSessionId=session_id,
+            runtimeUserId=actor_id,
             payload=payload,
             contentType="application/json",
             accept="application/json",
         )
+        MAX_RESPONSE_BYTES = 500_000  # 500 KB — prevents OOM from large subagent responses
         body = resp.get("response")
         if body:
             if hasattr(body, "read"):
-                body_text = body.read().decode("utf-8")
+                body_bytes = body.read(MAX_RESPONSE_BYTES + 1)
+                body_text = body_bytes.decode("utf-8", errors="replace")
+                if len(body_bytes) > MAX_RESPONSE_BYTES:
+                    logger.warning("AgentCore response truncated at %d bytes", MAX_RESPONSE_BYTES)
+                    body_text = body_text[:MAX_RESPONSE_BYTES]
             else:
-                body_text = str(body)
+                body_text = str(body)[:MAX_RESPONSE_BYTES]
             logger.info("AgentCore response (first 500): %s", body_text[:500])
             try:
                 return json.loads(body_text)
@@ -453,6 +463,27 @@ def handler(event, context):
         "Processing cron: schedule=%s user=%s channel=%s:%s",
         schedule_id, user_id, channel, channel_target,
     )
+
+    # Verify schedule ownership — cross-check DynamoDB CRON# record
+    try:
+        cron_record = identity_table.get_item(
+            Key={"PK": f"USER#{user_id}", "SK": f"CRON#{schedule_id}"}
+        ).get("Item")
+        if not cron_record:
+            logger.error(
+                "Schedule %s not owned by user %s — skipping execution",
+                schedule_id, user_id,
+            )
+            return {
+                "statusCode": 403,
+                "body": "Schedule ownership verification failed",
+            }
+    except Exception as e:
+        logger.error("Failed to verify schedule ownership: %s", e)
+        return {
+            "statusCode": 500,
+            "body": "Schedule ownership verification error",
+        }
 
     # Phase 1: Get or create session
     session_id = get_or_create_session(user_id)

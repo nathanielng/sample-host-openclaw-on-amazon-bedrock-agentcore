@@ -57,7 +57,7 @@ flowchart TB
 | Component | Port | Purpose |
 |---|---|---|
 | **Contract Server** | 8080 | AgentCore HTTP contract (`/ping`, `/invocations`), lazy initialization, routing (shim vs WebSocket bridge) |
-| **Lightweight Agent** | — | Warm-up shim during cold start; agentic loop with 10 tools via proxy → Bedrock (see below) |
+| **Lightweight Agent** | — | Warm-up shim during cold start; agentic loop with 13 tools via proxy → Bedrock (see below) |
 | **Bedrock Proxy** | 18790 | OpenAI-compatible API → Bedrock ConverseStream, Cognito identity, multimodal image handling |
 | **OpenClaw Gateway** | 18789 | Headless AI agent with full tools and ClawHub skills (available after ~2-4 min startup) |
 
@@ -146,15 +146,15 @@ sequenceDiagram
 
     U->>TG: "link"
     TG->>RL: Webhook
-    RL->>DB: Create BIND#ABC123 (10 min TTL)
-    RL->>TG: "Code: ABC123"
+    RL->>DB: Create BIND#A1B2C3D4 (10 min TTL)
+    RL->>TG: "Code: A1B2C3D4"
     TG->>U: Display code
 
-    U->>SL: "link ABC123"
+    U->>SL: "link A1B2C3D4"
     SL->>RL: Webhook
-    RL->>DB: Lookup BIND#ABC123
+    RL->>DB: Lookup BIND#A1B2C3D4
     RL->>DB: Create CHANNEL#slack:U123 → same userId
-    RL->>DB: Delete BIND#ABC123
+    RL->>DB: Delete BIND#A1B2C3D4
     RL->>SL: "Accounts linked!"
     SL->>U: Confirmation
 ```
@@ -170,7 +170,7 @@ flowchart TB
         CONTRACT -->|"full mode<br/>(OpenClaw ready)"| OPENCLAW
 
         subgraph ShimBox["Warm-up Phase (~5s – ~2-4min)"]
-            SHIM["<b>Lightweight Agent</b><br/>Agentic loop (20 iters)<br/>10 tools · SSRF protection<br/>Appends warm-up footer"]
+            SHIM["<b>Lightweight Agent</b><br/>Agentic loop (20 iters)<br/>13 tools · SSRF protection<br/>Appends warm-up footer"]
         end
 
         subgraph FullBox["Full Mode (~2-4min onward)"]
@@ -213,6 +213,12 @@ flowchart LR
         DS["delete_schedule"]
     end
 
+    subgraph SkillTools["Child Process (execFile)"]
+        IS["install_skill"]
+        UNS["uninstall_skill"]
+        LSK["list_skills"]
+    end
+
     subgraph SSRF["SSRF Prevention"]
         BL["Hostname blocklist<br/><i>localhost, metadata, IMDS</i>"]
         DNS["Post-DNS IP check<br/><i>loopback, RFC-1918,<br/>RFC-6598, link-local,<br/>IPv6 ULA, IPv4-mapped</i>"]
@@ -222,6 +228,7 @@ flowchart LR
     WF & WS --> BL --> DNS --> LIM
     FileTools -->|"/skills/s3-user-files/*.js"| S3[("S3")]
     CronTools -->|"/skills/eventbridge-cron/*.js"| EB["EventBridge<br/>Scheduler"]
+    SkillTools -->|"/skills/clawhub-manage/*.js"| DISK["Filesystem<br/>(clawhub CLI)"]
 ```
 
 ### Two-Phase Startup
@@ -248,7 +255,7 @@ gantt
     Full runtime handles messages       :t5, 150s, 200s
 ```
 
-**Warm-up phase** (t=~5s to ~2-4min): Lightweight agent responds with 10 tools (web_fetch, web_search, 4 file, 4 cron). All responses include `"_Warm-up mode — after full startup..._"` footer.
+**Warm-up phase** (t=~5s to ~2-4min): Lightweight agent responds with 13 tools (web_fetch, web_search, 4 file, 4 cron, 3 skill management). All responses include `"_Warm-up mode — after full startup..._"` footer.
 
 **Full mode** (t=~2-4min onward): OpenClaw gateway handles messages via WebSocket bridge. No warm-up footer. ClawHub skills available (transcript, deep-research-pro, jina-reader, telegram-compose, task-decomposer).
 
@@ -260,7 +267,7 @@ The lightweight agent (`bridge/lightweight-agent.js`) provides immediate respons
 |---|---|
 | **Routing** | Calls proxy at `127.0.0.1:18790/v1/chat/completions` (OpenAI format, non-streaming) |
 | **Agentic loop** | Up to 20 iterations of tool-call → tool-result → assistant-response |
-| **Tools (10)** | `read_user_file`, `write_user_file`, `list_user_files`, `delete_user_file`, `create_schedule`, `list_schedules`, `update_schedule`, `delete_schedule`, `web_fetch`, `web_search` |
+| **Tools (13)** | `read_user_file`, `write_user_file`, `list_user_files`, `delete_user_file`, `create_schedule`, `list_schedules`, `update_schedule`, `delete_schedule`, `install_skill`, `uninstall_skill`, `list_skills`, `web_fetch`, `web_search` |
 | **File/cron tools** | Execute skill scripts via `execFile` with isolated env vars |
 | **Web tools** | In-process HTTP(S) with SSRF prevention (blocked IPs, DNS rebinding mitigation, redirect validation) |
 | **SSRF protection** | Pre-connection hostname blocklist + post-DNS-resolution IP validation covering loopback, RFC-1918, RFC-6598, link-local (AWS IMDS), IPv6 ULA, IPv4-mapped IPv6 |
@@ -310,6 +317,8 @@ See [SECURITY.md](../SECURITY.md) for comprehensive security documentation.
 - VPC isolation with 7 VPC endpoints
 - Webhook signature validation (Telegram + Slack)
 - Per-user microVM isolation
-- STS session-scoped S3 credentials (per-user namespace restriction)
+- STS session-scoped credentials (per-user S3 namespace + DynamoDB record restriction)
 - KMS encryption at rest
+- Security group egress restricted to HTTPS (TCP 443) only
+- OpenClaw `read` tool denied (prevents credential access); `exec` allowed for skill management (STS-scoped); proxy bound to loopback
 - Least-privilege IAM with cdk-nag enforcement

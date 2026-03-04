@@ -6,6 +6,7 @@ from aws_cdk import (
     RemovalPolicy,
     aws_cloudwatch as cw,
     aws_cloudwatch_actions as cw_actions,
+    aws_kms as kms,
     aws_logs as logs,
     aws_iam as iam,
     aws_sns as sns,
@@ -23,6 +24,8 @@ class ObservabilityStack(Stack):
         self,
         scope: Construct,
         construct_id: str,
+        *,
+        cmk_arn: str,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -32,11 +35,13 @@ class ObservabilityStack(Stack):
         log_retention = self.node.try_get_context("cloudwatch_log_retention_days") or 30
 
         # --- SNS Topic for alarms -----------------------------------------
+        alarm_cmk = kms.Key.from_key_arn(self, "AlarmTopicCmk", cmk_arn)
         self.alarm_topic = sns.Topic(
             self,
             "AlarmTopic",
             topic_name="openclaw-alarms",
             display_name="OpenClaw Alarms",
+            master_key=alarm_cmk,
         )
 
         # --- Bedrock Invocation Log Group ---------------------------------

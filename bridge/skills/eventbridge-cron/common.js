@@ -61,6 +61,7 @@ function validateEnv() {
 /**
  * Validate a cron or rate expression.
  * Must match cron(...) or rate(...) format.
+ * Enforces minimum 5-minute interval to prevent cost abuse.
  */
 function validateExpression(expression) {
   const cronRegex = /^cron\(.+\)$/;
@@ -72,6 +73,29 @@ function validateExpression(expression) {
       `Examples: cron(0 9 * * ? *), rate(1 hour), rate(5 minutes)`,
     );
     process.exit(1);
+  }
+
+  // Enforce minimum 5-minute interval for rate expressions
+  const rateMatch = expression.match(/^rate\((\d+)\s+(minute|minutes)\)$/);
+  if (rateMatch && parseInt(rateMatch[1], 10) < 5) {
+    console.error(
+      "Error: Minimum rate interval is 5 minutes. " +
+      "Use rate(5 minutes) or higher to prevent cost abuse.",
+    );
+    process.exit(1);
+  }
+
+  // Reject every-minute cron expressions (wildcard or */1 in minutes field)
+  const cronFieldsMatch = expression.match(/^cron\((\S+)\s/);
+  if (cronFieldsMatch) {
+    const minutesField = cronFieldsMatch[1];
+    if (minutesField === "*" || minutesField === "*/1") {
+      console.error(
+        "Error: Every-minute cron expressions are not allowed. " +
+        "Minimum interval is 5 minutes. Use */5 or higher.",
+      );
+      process.exit(1);
+    }
   }
 }
 
@@ -101,9 +125,16 @@ function generateScheduleId() {
 /**
  * Build the EventBridge schedule name from userId and scheduleId.
  * Format: openclaw-{userId}-{scheduleId}
+ * EventBridge schedule names have a 64-character limit.
  */
 function buildScheduleName(userId, scheduleId) {
-  return `openclaw-${userId}-${scheduleId}`;
+  const prefix = "openclaw-";
+  const suffix = `-${scheduleId}`;
+  const maxUserIdLen = 64 - prefix.length - suffix.length;
+  const truncatedUserId = userId.length > maxUserIdLen
+    ? userId.slice(0, maxUserIdLen)
+    : userId;
+  return `${prefix}${truncatedUserId}${suffix}`;
 }
 
 /**

@@ -25,6 +25,7 @@ async function main() {
     new ListObjectsV2Command({
       Bucket: BUCKET,
       Prefix: prefix,
+      MaxKeys: 1000,
     }),
   );
 

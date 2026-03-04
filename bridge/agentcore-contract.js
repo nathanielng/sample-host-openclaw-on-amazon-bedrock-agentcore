@@ -18,6 +18,7 @@
  */
 
 const http = require("http");
+const fs = require("fs");
 const { spawn } = require("child_process");
 const WebSocket = require("ws");
 const {
@@ -58,6 +59,7 @@ let startTime = Date.now();
 let shuttingDown = false;
 let credentialRefreshTimer = null;
 const SCOPED_CREDS_DIR = "/tmp/scoped-creds";
+const IDENTITY_FILE = "/tmp/current-identity.json";
 const BUILD_VERSION = "v32"; // Bump in cdk.json to force container redeploy
 
 // OpenClaw process diagnostics (last N lines of stdout/stderr)
@@ -68,6 +70,23 @@ let openclawExitCode = null;
 // Message queue for serializing concurrent requests (OpenClaw WebSocket path)
 let messageQueue = [];
 let processingMessage = false;
+
+/**
+ * Write current actorId and channel to a shared file so the proxy process
+ * can pick up cross-channel identity changes (the proxy's env vars are
+ * fixed at spawn time and cannot be updated for a running child process).
+ */
+function updateIdentityFile(actorId, channel) {
+  try {
+    fs.writeFileSync(
+      IDENTITY_FILE,
+      JSON.stringify({ actorId, channel }),
+      "utf-8",
+    );
+  } catch (err) {
+    console.warn(`[contract] Failed to write identity file: ${err.message}`);
+  }
+}
 
 /**
  * Pre-fetch secrets from Secrets Manager at container boot.
@@ -307,11 +326,15 @@ function writeOpenClawConfig() {
         "write", // Local writes don't persist — use S3 skill instead
         "edit", // Local edits are ephemeral — use S3 skill instead
         "apply_patch", // Code patching not needed for chat assistant
+        "read", // Blocks local file reads — prevents reading sibling process environ; use s3-user-files
         "browser", // No headless browser in ARM64 container
         "canvas", // No UI rendering in headless chat context
         "cron", // EventBridge handles scheduling, not OpenClaw's built-in cron
         "gateway", // Admin tool — not needed for end users
       ],
+      // Note: `exec` is intentionally NOT denied — skills like clawhub-manage
+      // need Bash(node:*) to run scripts. Scoped STS credentials ensure
+      // OpenClaw only has access to the user's S3 namespace prefix.
     },
     skills: {
       allowBundled: [],
@@ -384,6 +407,17 @@ function writeOpenClawConfig() {
         "- **transcript**: YouTube video transcript extraction",
         "- **task-decomposer**: Break complex requests into manageable subtasks (uses sub-agents)",
         "",
+        "### Installing More Skills",
+        "",
+        "You have the **clawhub-manage** skill to install/uninstall additional community skills from the ClawHub marketplace.",
+        "When a user asks to install or add a skill, use this skill — do NOT say it's not possible or that exec is blocked.",
+        "**Use Bash to run the skill scripts** (Bash is available, only exec is denied):",
+        "- Install: `node /skills/clawhub-manage/install.js <skill-name>`",
+        "- Uninstall: `node /skills/clawhub-manage/uninstall.js <skill-name>`",
+        "- List: `node /skills/clawhub-manage/list.js`",
+        "",
+        "After install/uninstall, the skill will be available on the next session start (after idle timeout or new conversation).",
+        "",
         "## Sub-agents",
         "",
         "Skills like deep-research-pro and task-decomposer can spawn sub-agents for parallel work.",
@@ -430,6 +464,9 @@ async function init(userId, actorId, channel) {
     const namespace = actorId.replace(/:/g, "_");
     currentUserId = userId;
     currentNamespace = namespace;
+
+    // Write initial identity file for the proxy to read
+    updateIdentityFile(actorId, channel);
 
     console.log(
       `[contract] Init for user=${userId} actor=${actorId} namespace=${namespace}`,
@@ -532,12 +569,25 @@ async function init(userId, actorId, channel) {
     // Build scoped env for OpenClaw — excludes container credentials,
     // uses credential_process for scoped S3 access only.
     // Falls back to full process.env if scoped credentials failed.
-    const openclawEnv = scopedCredsAvailable
-      ? scopedCreds.buildOpenClawEnv({
-          credDir: SCOPED_CREDS_DIR,
-          baseEnv: process.env,
-        })
-      : { ...process.env, OPENCLAW_SKIP_CRON: "1" };
+    let openclawEnv;
+    if (scopedCredsAvailable) {
+      openclawEnv = scopedCreds.buildOpenClawEnv({
+        credDir: SCOPED_CREDS_DIR,
+        baseEnv: process.env,
+      });
+    } else {
+      // SECURITY: Never start OpenClaw with full execution role credentials.
+      // Build a safe env that strips ALL AWS credential sources.
+      // OpenClaw will have zero AWS access — tools fail gracefully.
+      console.error(
+        "[contract] WARNING: Scoped credentials failed — starting OpenClaw with zero AWS access",
+      );
+      openclawEnv = scopedCreds.buildOpenClawEnv({
+        credDir: null,
+        baseEnv: process.env,
+      });
+      openclawEnv.OPENCLAW_NO_AWS = "1";
+    }
     openclawProcess = spawn(
       "openclaw",
       ["gateway", "run", "--port", String(OPENCLAW_PORT), "--verbose"],
@@ -973,6 +1023,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+
   // POST /invocations — Chat handler
   if (req.method === "POST" && req.url === "/invocations") {
     let body = "";
@@ -1047,6 +1098,9 @@ const server = http.createServer(async (req, res) => {
             );
             return;
           }
+
+          // Update shared identity file so proxy picks up cross-channel changes
+          updateIdentityFile(actorId, channel || "unknown");
 
           // Block until init completes (unlike chat which returns immediately)
           if (!openclawReady || !proxyReady) {
@@ -1127,6 +1181,9 @@ const server = http.createServer(async (req, res) => {
             );
             return;
           }
+
+          // Update shared identity file so proxy picks up cross-channel changes
+          updateIdentityFile(actorId, channel || "unknown");
 
           // Trigger init if not done yet (blocks until proxy is ready)
           if (!proxyReady && !initInProgress) {

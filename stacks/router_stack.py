@@ -16,6 +16,7 @@ from aws_cdk import (
     aws_apigatewayv2_integrations as apigwv2_integrations,
     aws_dynamodb as dynamodb,
     aws_iam as iam,
+    aws_kms as kms,
     aws_lambda as _lambda,
     aws_logs as logs,
 )
@@ -52,6 +53,7 @@ class RouterStack(Stack):
         registration_open = str(self.node.try_get_context("registration_open") or "false").lower()
 
         # --- DynamoDB Identity Table ---
+        identity_cmk = kms.Key.from_key_arn(self, "IdentityTableCmk", cmk_arn)
         self.identity_table = dynamodb.Table(
             self,
             "IdentityTable",
@@ -66,6 +68,8 @@ class RouterStack(Stack):
             removal_policy=RemovalPolicy.RETAIN,
             time_to_live_attribute="ttl",
             point_in_time_recovery=True,
+            encryption=dynamodb.TableEncryption.CUSTOMER_MANAGED,
+            encryption_key=identity_cmk,
         )
 
         # --- Log Group ---
@@ -133,7 +137,16 @@ class RouterStack(Stack):
             integration=lambda_integration,
         )
 
-        # Throttling — limit burst and sustained request rate
+        # --- Access Logging ---
+        access_log_group = logs.LogGroup(
+            self,
+            "ApiAccessLogGroup",
+            log_group_name="/openclaw/api-access",
+            retention=retention_days(log_retention),
+            removal_policy=RemovalPolicy.RETAIN,
+        )
+
+        # Throttling + access logging — configured on the default stage
         default_stage = self.http_api.default_stage
         if default_stage:
             cfn_stage = default_stage.node.default_child
@@ -142,6 +155,10 @@ class RouterStack(Stack):
                 throttling_rate_limit=100,
                 detailed_metrics_enabled=True,
             )
+            cfn_stage.access_log_settings = apigwv2.CfnStage.AccessLogSettingsProperty(
+                destination_arn=access_log_group.log_group_arn,
+                format='{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","method":"$context.httpMethod","path":"$context.path","status":"$context.status","responseLength":"$context.responseLength","latency":"$context.responseLatency","time":"$context.requestTime"}',
+            )
 
         # --- IAM Permissions ---
 
@@ -149,7 +166,10 @@ class RouterStack(Stack):
         # IAM evaluates against runtime/{id}/runtime-endpoint/{endpoint-id}
         self.router_fn.add_to_role_policy(
             iam.PolicyStatement(
-                actions=["bedrock-agentcore:InvokeAgentRuntime"],
+                actions=[
+                    "bedrock-agentcore:InvokeAgentRuntime",
+                    "bedrock-agentcore:InvokeAgentRuntimeForUser",
+                ],
                 resources=[
                     runtime_arn,
                     f"{runtime_arn}/*",
@@ -237,13 +257,16 @@ class RouterStack(Stack):
                     reason="AgentCore InvokeAgentRuntime IAM resource must include "
                     "runtime-endpoint sub-resource path (runtime/{id}/*). "
                     "Secrets Manager scoped to openclaw/* prefix. DynamoDB "
-                    "grant_read_write_data adds index wildcards. S3 PutObject "
-                    "scoped to */_uploads/* prefix for image uploads.",
+                    "grant_read_write_data adds index wildcards and KMS wildcards "
+                    "for CMK-encrypted table. S3 PutObject scoped to */_uploads/* "
+                    "prefix for image uploads.",
                     applies_to=[
                         f"Resource::arn:aws:bedrock-agentcore:{region}:{account}:runtime/<AgentRuntime.AgentRuntimeId>/*",
                         f"Resource::arn:aws:secretsmanager:{region}:{account}:secret:openclaw/*",
                         f"Resource::{self.identity_table.table_arn}/index/*",
                         "Resource::<UserFilesBucketCFDFD8C0.Arn>/*/_uploads/*",
+                        "Action::kms:GenerateDataKey*",
+                        "Action::kms:ReEncrypt*",
                     ],
                 ),
                 cdk_nag.NagPackSuppression(
@@ -257,17 +280,18 @@ class RouterStack(Stack):
             self.http_api,
             [
                 cdk_nag.NagPackSuppression(
-                    id="AwsSolutions-APIG1",
-                    reason="Access logging not needed — Lambda logs provide full audit trail "
-                    "with request IDs, user IDs, and webhook validation outcomes.",
-                ),
-                cdk_nag.NagPackSuppression(
                     id="AwsSolutions-APIG4",
                     reason="External webhooks (Telegram, Slack) cannot use IAM/JWT auth. "
                     "Webhook secret validation is enforced in the Lambda handler: "
                     "Telegram X-Telegram-Bot-Api-Secret-Token header and Slack "
                     "X-Slack-Signature HMAC verification. API Gateway throttling "
                     "provides rate limiting. Only explicit POST routes are exposed.",
+                ),
+                cdk_nag.NagPackSuppression(
+                    id="AwsSolutions-APIG1",
+                    reason="Access logging IS configured via L1 escape hatch "
+                    "(CfnStage.access_log_settings) to /openclaw/api-access log group. "
+                    "cdk-nag cannot detect L1-level access log configuration.",
                 ),
             ],
             apply_to_children=True,
