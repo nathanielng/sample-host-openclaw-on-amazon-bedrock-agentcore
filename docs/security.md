@@ -22,7 +22,7 @@ Running an AI agent with tool access (bash, web fetch, file operations) on a loc
 | **Credential theft** | Plaintext `.env` files, shell history | Secrets Manager (KMS-encrypted, audited via CloudTrail); credentials never written to disk or env vars |
 | **Network exposure** | Open ports, direct internet exposure | VPC private subnets, no public IPs on containers, 7+ VPC endpoints keep traffic on AWS backbone |
 | **Abuse / runaway costs** | No budget controls | Daily token budget (1M tokens), daily cost budget ($5 USD), anomaly detection, CloudWatch alarms |
-| **Audit trail** | None or manual log review | CloudTrail (immutable API audit log with file validation), CloudWatch access logs, Bedrock invocation logging |
+| **Audit trail** | None or manual log review | CloudTrail (most accounts already have one; optional dedicated trail available), CloudWatch access logs, Bedrock invocation logging |
 | **Lateral movement** | Full host access, all env vars | STS scoped credentials + tool deny list + credential env var blocklist; zero-access fallback if STS fails |
 | **OS / container CVEs** | Manual patching | ECR image scanning on push, managed runtime, multi-stage Docker build (no build tools in runtime) |
 | **DDoS / abuse** | Direct exposure, no rate limits | API Gateway throttling (burst 50, sustained 100 req/s), webhook signature validation |
@@ -144,7 +144,7 @@ The proxy process (`agentcore-proxy.js`) is trusted code and retains full execut
 
 | Scope | Mechanism | Details |
 |---|---|---|
-| **At rest** | KMS CMK with auto-rotation | Applied to: Secrets Manager, DynamoDB identity table, S3 user files bucket, SNS alarm topic. CloudTrail bucket uses SSE-S3 (AES-256). Token usage table uses default DynamoDB encryption |
+| **At rest** | KMS CMK with auto-rotation | Applied to: Secrets Manager, DynamoDB identity table, S3 user files bucket, SNS alarm topic. Optional CloudTrail bucket uses SSE-S3 (AES-256). Token usage table uses default DynamoDB encryption |
 | **In transit** | HTTPS enforced | VPC endpoints use HTTPS; S3 bucket `enforce_ssl=True`; API Gateway endpoints are HTTPS-only |
 | **CloudTrail integrity** | File validation enabled | Cryptographic digest files allow detection of log tampering |
 | **S3 versioning** | Enabled on user files + CloudTrail buckets | Protects against accidental deletion, enables recovery |
@@ -244,7 +244,11 @@ The lightweight agent's `web_fetch` tool implements multi-layer SSRF protection:
 
 ### 3.9 Audit, Monitoring & Observability
 
-#### CloudTrail
+#### CloudTrail (Optional — Off by Default)
+
+Most AWS accounts already have an organization-level or account-level CloudTrail. Deploying a second trail adds cost (S3 storage for log delivery, CloudWatch log group) with no additional security benefit. For this reason, the project's dedicated CloudTrail is **disabled by default**.
+
+To enable it, set `"enable_cloudtrail": true` in `cdk.json` and redeploy. This creates:
 
 | Feature | Configuration |
 |---|---|
@@ -307,7 +311,7 @@ These are the security capabilities that AWS managed services provide — capabi
 | **KMS** | Customer-managed encryption keys with automatic annual rotation; envelope encryption; all key usage audited via CloudTrail |
 | **Secrets Manager** | Centralized secret storage with KMS encryption; audit trail for every access; no secrets in code, env files, or container images |
 | **VPC Endpoints** | AWS API traffic never traverses the public internet; reduces network attack surface; private DNS resolution |
-| **CloudTrail** | Immutable API audit log; cryptographic file validation detects tampering; provides compliance evidence |
+| **CloudTrail** | Immutable API audit log; cryptographic file validation detects tampering; provides compliance evidence. Most accounts already have one — optional dedicated trail available via `enable_cloudtrail` |
 | **CloudWatch** | Real-time operational monitoring; anomaly detection on token usage; budget alarms; two operational dashboards |
 | **S3** | Versioned, KMS-encrypted storage with SSL enforcement, public access blocking, and lifecycle-managed expiration |
 | **DynamoDB** | Encryption at rest (identity table: KMS CMK; token usage table: AWS-owned key), point-in-time recovery, TTL auto-expiry, IAM condition-based access (LeadingKeys) |
@@ -391,7 +395,7 @@ cdk deploy OpenClawRouter --require-approval never
 ./scripts/manage-allowlist.sh list
 ```
 
-### Reviewing CloudTrail Logs
+### Reviewing CloudTrail Logs (When `enable_cloudtrail` Is Enabled)
 
 ```bash
 # Find the CloudTrail S3 bucket

@@ -77,35 +77,44 @@ class SecurityStack(Stack):
                 ),  # placeholder — replace via console/CLI
             )
 
-        # --- CloudTrail ---------------------------------------------------
-        trail_bucket = s3.Bucket(
-            self,
-            "CloudTrailBucket",
-            encryption=s3.BucketEncryption.S3_MANAGED,
-            enforce_ssl=True,
-            block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
-            versioned=True,
-            removal_policy=RemovalPolicy.RETAIN,
-            auto_delete_objects=False,
-        )
+        # --- CloudTrail (optional, off by default) -------------------------
+        # Most AWS accounts already have an organization-level or account-level
+        # CloudTrail. Deploying a second trail adds cost (S3 storage + log
+        # delivery) with no additional security benefit. Enable via cdk.json
+        # context: "enable_cloudtrail": true
+        enable_cloudtrail = self.node.try_get_context("enable_cloudtrail") or False
+        self.trail = None
+        trail_bucket = None
 
-        trail_log_group = logs.LogGroup(
-            self,
-            "CloudTrailLogGroup",
-            retention=retention_days(log_retention),
-            removal_policy=RemovalPolicy.DESTROY,
-        )
+        if enable_cloudtrail:
+            trail_bucket = s3.Bucket(
+                self,
+                "CloudTrailBucket",
+                encryption=s3.BucketEncryption.S3_MANAGED,
+                enforce_ssl=True,
+                block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+                versioned=True,
+                removal_policy=RemovalPolicy.RETAIN,
+                auto_delete_objects=False,
+            )
 
-        self.trail = cloudtrail.Trail(
-            self,
-            "CloudTrail",
-            bucket=trail_bucket,
-            send_to_cloud_watch_logs=True,
-            cloud_watch_log_group=trail_log_group,
-            is_multi_region_trail=False,
-            include_global_service_events=True,
-            enable_file_validation=True,
-        )
+            trail_log_group = logs.LogGroup(
+                self,
+                "CloudTrailLogGroup",
+                retention=retention_days(log_retention),
+                removal_policy=RemovalPolicy.DESTROY,
+            )
+
+            self.trail = cloudtrail.Trail(
+                self,
+                "CloudTrail",
+                bucket=trail_bucket,
+                send_to_cloud_watch_logs=True,
+                cloud_watch_log_group=trail_log_group,
+                is_multi_region_trail=False,
+                include_global_service_events=True,
+                enable_file_validation=True,
+            )
 
         # --- Cognito User Pool (admin-provisioned identities) ---------------
         self.user_pool = cognito.UserPool(
@@ -182,17 +191,18 @@ class SecurityStack(Stack):
                 ),
             ],
         )
-        cdk_nag.NagSuppressions.add_resource_suppressions(
-            trail_bucket,
-            [
-                cdk_nag.NagPackSuppression(
-                    id="AwsSolutions-S1",
-                    reason="This is the CloudTrail log bucket itself. Enabling access logs "
-                    "would require an additional bucket, creating a recursive logging chain. "
-                    "CloudTrail file validation is enabled as an integrity check instead.",
-                ),
-            ],
-        )
+        if trail_bucket:
+            cdk_nag.NagSuppressions.add_resource_suppressions(
+                trail_bucket,
+                [
+                    cdk_nag.NagPackSuppression(
+                        id="AwsSolutions-S1",
+                        reason="This is the CloudTrail log bucket itself. Enabling access logs "
+                        "would require an additional bucket, creating a recursive logging chain. "
+                        "CloudTrail file validation is enabled as an integrity check instead.",
+                    ),
+                ],
+            )
         cdk_nag.NagSuppressions.add_resource_suppressions(
             self.user_pool,
             [

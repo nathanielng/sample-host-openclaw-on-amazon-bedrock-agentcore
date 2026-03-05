@@ -76,7 +76,8 @@ This solution applies **defense-in-depth** across network, application, identity
 - **Webhook authentication**: Cryptographic validation (Telegram secret token, Slack HMAC-SHA256 with replay protection)
 - **Per-user isolation**: Each user runs in their own AgentCore microVM with dedicated S3 namespace
 - **STS session-scoped credentials**: Container assumes its own role with a session policy restricting S3 and DynamoDB to the user's namespace/records — prevents cross-user data access even through shell tools
-- **Encryption**: All data encrypted at rest with customer-managed KMS key (S3, DynamoDB, SNS, CloudTrail, Secrets Manager) and in transit (TLS)
+- **Encryption**: All data encrypted at rest with customer-managed KMS key (S3, DynamoDB, SNS, Secrets Manager) and in transit (TLS)
+- **CloudTrail**: Optional dedicated trail (`enable_cloudtrail` in cdk.json). Off by default — most AWS accounts already have an organization or account-level trail. Enabling adds a dedicated S3 bucket + trail for this project's audit logs
 - **Least-privilege IAM**: Tightly scoped permissions per component
 - **Tool hardening**: OpenClaw `read` tool denied to prevent credential access via `/proc` and local file reads; `exec` allowed for skill management (scoped STS credentials limit blast radius); proxy bound to loopback only; security group egress restricted to HTTPS
 - **Automated compliance**: cdk-nag AwsSolutions checks on every `cdk synth`
@@ -139,7 +140,7 @@ cdk deploy --all --require-approval never
 
 This deploys 7 stacks in order:
 1. **OpenClawVpc** — VPC, subnets, NAT gateway, VPC endpoints
-2. **OpenClawSecurity** — KMS, Secrets Manager, Cognito, CloudTrail
+2. **OpenClawSecurity** — KMS, Secrets Manager, Cognito (+ optional CloudTrail)
 3. **OpenClawAgentCore** — Runtime, WorkloadIdentity, ECR, S3, IAM
 4. **OpenClawRouter** — Lambda + API Gateway HTTP API, DynamoDB identity table
 5. **OpenClawObservability** — Dashboards, alarms, Bedrock logging
@@ -234,7 +235,7 @@ openclaw-on-agentcore/
   stacks/
     __init__.py                   # Shared helper (RetentionDays converter)
     vpc_stack.py                  # VPC, subnets, NAT, 7 VPC endpoints, flow logs
-    security_stack.py             # KMS CMK, Secrets Manager, Cognito, CloudTrail
+    security_stack.py             # KMS CMK, Secrets Manager, Cognito, optional CloudTrail
     agentcore_stack.py            # Runtime, WorkloadIdentity, ECR, S3, IAM
     router_stack.py               # Router Lambda + API Gateway HTTP API + DynamoDB identity
     observability_stack.py        # Dashboards, alarms, Bedrock logging
@@ -289,7 +290,7 @@ openclaw-on-agentcore/
 | Stack | Resources | Dependencies |
 |---|---|---|
 | **OpenClawVpc** | VPC (2 AZ), private/public subnets, NAT, 7 VPC endpoints, flow logs | None |
-| **OpenClawSecurity** | KMS CMK, Secrets Manager (7 secrets incl. webhook validation), Cognito User Pool, CloudTrail | None |
+| **OpenClawSecurity** | KMS CMK, Secrets Manager (7 secrets incl. webhook validation), Cognito User Pool, optional CloudTrail | None |
 | **OpenClawAgentCore** | CfnRuntime, CfnRuntimeEndpoint, CfnWorkloadIdentity, ECR, S3 bucket, SG, IAM | Vpc, Security |
 | **OpenClawRouter** | Lambda, API Gateway HTTP API (explicit routes, throttling), DynamoDB identity table | AgentCore, Security |
 | **OpenClawObservability** | Operations dashboard, alarms (errors, latency, throttles), SNS, Bedrock logging | None |
@@ -320,6 +321,7 @@ All tunable parameters are in `cdk.json`:
 | `user_files_ttl_days` | `365` | S3 per-user file expiration |
 | `cron_lambda_timeout_seconds` | `600` | Cron executor Lambda timeout (must exceed warmup time) |
 | `cron_lambda_memory_mb` | `256` | Cron executor Lambda memory |
+| `enable_cloudtrail` | `false` | Deploy a dedicated CloudTrail trail. Off by default — most accounts already have one. Enabling creates an S3 bucket + trail (additional cost) |
 | `cron_lead_time_minutes` | `5` | Minutes before schedule time to start warmup |
 
 ## Channel Setup

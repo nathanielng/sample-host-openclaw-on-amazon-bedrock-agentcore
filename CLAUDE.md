@@ -103,7 +103,7 @@ openclaw-on-agentcore/
   stacks/
     __init__.py                   # Shared helper (RetentionDays converter)
     vpc_stack.py                  # VPC, subnets, NAT, 7 VPC endpoints, flow logs
-    security_stack.py             # KMS CMK, Secrets Manager, Cognito, CloudTrail
+    security_stack.py             # KMS CMK, Secrets Manager, Cognito, optional CloudTrail
     agentcore_stack.py            # Runtime, WorkloadIdentity, ECR, S3, IAM
     router_stack.py               # Router Lambda + API Gateway HTTP API + DynamoDB identity
     observability_stack.py        # Dashboards, alarms, Bedrock logging
@@ -169,7 +169,7 @@ openclaw-on-agentcore/
 | Stack | Key Resources | Dependencies |
 |---|---|---|
 | **OpenClawVpc** | VPC (2 AZ), subnets, NAT, 7 VPC endpoints, flow logs | None |
-| **OpenClawSecurity** | KMS CMK, Secrets Manager (7 secrets incl. webhook validation), Cognito User Pool, CloudTrail | None |
+| **OpenClawSecurity** | KMS CMK, Secrets Manager (7 secrets incl. webhook validation), Cognito User Pool, optional CloudTrail | None |
 | **OpenClawAgentCore** | CfnRuntime, CfnRuntimeEndpoint, CfnWorkloadIdentity, ECR, S3 bucket, SG, IAM | Vpc, Security |
 | **OpenClawRouter** | Lambda, API Gateway HTTP API (explicit routes, throttling), DynamoDB identity table | AgentCore, Security |
 | **OpenClawObservability** | Operations dashboard, alarms, SNS, Bedrock invocation logging | None |
@@ -327,6 +327,7 @@ aws dynamodb scan --table-name openclaw-identity --region $CDK_DEFAULT_REGION
 | `registration_open` | `false` | If true, any user can register. If false, only allowlisted users |
 | `cron_lambda_timeout_seconds` | `600` | Cron executor Lambda timeout (must exceed warmup time) |
 | `cron_lambda_memory_mb` | `256` | Cron executor Lambda memory |
+| `enable_cloudtrail` | `false` | Deploy a dedicated CloudTrail trail (S3 bucket + trail). Off by default — most accounts already have one |
 | `cron_lead_time_minutes` | `5` | Minutes before schedule time to start warmup |
 | `subagent_model_id` | (empty) | Bedrock model for sub-agents. Empty = use `default_model_id` |
 
