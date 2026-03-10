@@ -40,6 +40,7 @@ RUN cd /app && npm init -y > /dev/null 2>&1 && \
                 @aws-sdk/client-dynamodb \
                 @aws-sdk/client-sts \
                 @aws-sdk/lib-dynamodb \
+                playwright-core \
                 ws
 
 # Pre-warm V8 compile cache for heavy AWS SDK modules.

@@ -58,8 +58,12 @@ let secretsPrefetchPromise = null;
 let startTime = Date.now();
 let shuttingDown = false;
 let credentialRefreshTimer = null;
+let currentBrowserSessionId = null;
+let currentBrowserEndpoint = null;
 const SCOPED_CREDS_DIR = "/tmp/scoped-creds";
 const IDENTITY_FILE = "/tmp/current-identity.json";
+const BROWSER_SESSION_FILE = "/tmp/agentcore-browser-session.json";
+const BROWSER_SESSION_TIMEOUT_SECONDS = 3600;
 const BUILD_VERSION = "v35"; // Bump in cdk.json to force container redeploy
 
 // OpenClaw process diagnostics (last N lines of stdout/stderr)
@@ -491,6 +495,67 @@ async function pollOpenClawReadiness(namespace) {
 }
 
 /**
+ * Start an AgentCore Browser session for the given user.
+ * Non-fatal — logs and continues if browser feature is not enabled or SDK fails.
+ */
+async function initBrowserSession(userId) {
+  const browserIdentifier = process.env.BROWSER_IDENTIFIER;
+  if (!browserIdentifier) return; // Feature not enabled
+
+  // Per-user sessions use a single userId; check state vars directly
+  if (currentBrowserSessionId) return; // Already initialized
+
+  try {
+    const { BedrockAgentCoreClient, StartBrowserSessionCommand } =
+      await import("@aws-sdk/client-bedrock-agentcore");
+    const client = new BedrockAgentCoreClient({ region: process.env.AWS_REGION || "us-east-1" });
+
+    const response = await client.send(new StartBrowserSessionCommand({
+      browserIdentifier,
+      name: userId.replace(/[^a-zA-Z0-9-]/g, "-").slice(0, 64),
+      sessionTimeoutSeconds: BROWSER_SESSION_TIMEOUT_SECONDS,
+    }));
+
+    const endpoint = response.streams?.automationStream?.streamEndpoint;
+    if (!endpoint) throw new Error("No automation stream endpoint returned");
+
+    currentBrowserSessionId = response.sessionId;
+    currentBrowserEndpoint = endpoint;
+
+    // Write endpoint to file for skill processes to read
+    fs.writeFileSync(BROWSER_SESSION_FILE, JSON.stringify({ endpoint, sessionId: response.sessionId }));
+
+    console.log(`[browser] Session started for ${userId}: ${response.sessionId}`);
+  } catch (err) {
+    console.error(`[browser] Failed to start session for ${userId}:`, err.message);
+    // Non-fatal — continue without browser
+  }
+}
+
+/**
+ * Stop all active browser sessions. Called during SIGTERM shutdown.
+ */
+async function stopBrowserSessions() {
+  const browserIdentifier = process.env.BROWSER_IDENTIFIER;
+  if (!browserIdentifier) return;
+  if (!currentBrowserSessionId) return;
+
+  try {
+    const { BedrockAgentCoreClient, StopBrowserSessionCommand } =
+      await import("@aws-sdk/client-bedrock-agentcore");
+    const client = new BedrockAgentCoreClient({ region: process.env.AWS_REGION || "us-east-1" });
+
+    await client.send(new StopBrowserSessionCommand({
+      browserIdentifier,
+      sessionId: currentBrowserSessionId,
+    }));
+    console.log(`[browser] Stopped session for ${currentUserId}`);
+  } catch (err) {
+    console.error(`[browser] Stop failed for ${currentUserId}:`, err.message);
+  }
+}
+
+/**
  * Initialization — called on first /invocations request.
  *
  * Uses pre-fetched secrets. Starts proxy, OpenClaw, and workspace restore
@@ -679,6 +744,11 @@ async function init(userId, actorId, channel) {
       console.error(
         `[contract] OpenClaw readiness polling failed: ${err.message}`,
       );
+    });
+
+    // Start browser session in background (non-blocking, fire-and-forget)
+    initBrowserSession(userId).catch((err) => {
+      console.error(`[browser] Init error (non-fatal): ${err.message}`);
     });
 
     console.log(
@@ -1373,6 +1443,14 @@ process.on("SIGTERM", async () => {
   } catch (err) {
     console.warn(`[contract] Workspace cleanup error: ${err.message}`);
   }
+
+  // Stop browser sessions before exit
+  try {
+    await stopBrowserSessions();
+  } catch (err) {
+    console.warn(`[contract] Browser session cleanup error: ${err.message}`);
+  }
+
   clearTimeout(saveTimeout);
 
   // Kill child processes
