@@ -72,9 +72,27 @@ function truncateContent(text, maxChars) {
   return text.slice(0, maxChars) + `\n\n[Content truncated at ${maxChars} characters]`;
 }
 
+const STEALTH_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+
+async function applyStealthHeaders(page) {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+    Object.defineProperty(navigator, "plugins", { get: () => [1, 2, 3, 4, 5] });
+    Object.defineProperty(navigator, "languages", { get: () => ["en-US", "en"] });
+    window.chrome = { runtime: {} };
+  });
+  await page.setExtraHTTPHeaders({
+    "User-Agent": STEALTH_USER_AGENT,
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+  });
+}
+
 module.exports = {
   getBrowserSession,
   connectBrowser,
+  applyStealthHeaders,
   uploadScreenshotToS3,
   truncateContent,
   CONTENT_TRUNCATE_CHARS,

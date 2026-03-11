@@ -1,5 +1,5 @@
 "use strict";
-const { connectBrowser, truncateContent, CONTENT_TRUNCATE_CHARS, NAV_TIMEOUT_MS } = require("./common");
+const { connectBrowser, applyStealthHeaders, truncateContent, CONTENT_TRUNCATE_CHARS, NAV_TIMEOUT_MS } = require("./common");
 
 async function browserNavigate(args) {
   const { url } = args;
@@ -7,7 +7,8 @@ async function browserNavigate(args) {
 
   try {
     const { page } = await connectBrowser();
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS });
+    await applyStealthHeaders(page);
+    await page.goto(url, { waitUntil: "commit", timeout: NAV_TIMEOUT_MS });
     const title = await page.title();
 
     // Extract readable text — remove script/style noise

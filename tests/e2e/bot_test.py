@@ -1150,7 +1150,7 @@ class TestBrowserFeature:
         since_ms = int(time.time() * 1000)
         result = post_webhook(
             e2e_config,
-            "Using the agentcore-browser skill, navigate to https://www.cnn.com, "
+            "Using the agentcore-browser skill, navigate to https://quotes.toscrape.com, "
             "take a screenshot of the page, and tell me the main headline you can see.",
         )
         assert result.status_code == 200

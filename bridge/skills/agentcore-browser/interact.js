@@ -1,5 +1,5 @@
 "use strict";
-const { connectBrowser, INTERACT_TIMEOUT_MS, WAIT_TIMEOUT_MS } = require("./common");
+const { connectBrowser, applyStealthHeaders, INTERACT_TIMEOUT_MS, WAIT_TIMEOUT_MS } = require("./common");
 
 const VALID_ACTIONS = new Set(["click", "type", "wait", "scroll"]);
 
@@ -22,6 +22,7 @@ async function browserInteract(args) {
 
   try {
     const { page } = await connectBrowser();
+    await applyStealthHeaders(page);
 
     switch (action) {
       case "click":
