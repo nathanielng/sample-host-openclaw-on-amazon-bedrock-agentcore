@@ -1140,7 +1140,7 @@ class TestBrowserFeature:
     """
 
     def test_browser_smoke(self, e2e_config, browser_enabled):
-        """Agent navigates to a URL using the browser skill."""
+        """Agent takes a screenshot of a live site — proves real browser usage."""
         ready, elapsed = _wait_for_full_openclaw(e2e_config)
         assert ready, (
             f"OpenClaw did not fully start within timeout. "
@@ -1150,8 +1150,8 @@ class TestBrowserFeature:
         since_ms = int(time.time() * 1000)
         result = post_webhook(
             e2e_config,
-            "Open https://example.com using the agentcore-browser skill "
-            "and tell me the page title.",
+            "Using the agentcore-browser skill, navigate to https://www.cnn.com, "
+            "take a screenshot of the page, and tell me the main headline you can see.",
         )
         assert result.status_code == 200
 
@@ -1160,9 +1160,11 @@ class TestBrowserFeature:
             f"Browser navigate incomplete (timed_out={tail.timed_out}, "
             f"elapsed={tail.elapsed_s:.1f}s)"
         )
-        assert "example" in tail.response_text.lower(), (
-            f"Expected 'example' in response.\n"
-            f"Response: {tail.response_text[:300]}"
+        response_lower = tail.response_text.lower()
+        screenshot_words = ["screenshot", "captured", "image", "photo", "taken"]
+        assert any(w in response_lower for w in screenshot_words), (
+            f"Expected screenshot confirmation (one of {screenshot_words}) in response.\n"
+            f"Response: {tail.response_text[:500]}"
         )
         print(f"  Browser response: {tail.response_text[:200]}")
 
