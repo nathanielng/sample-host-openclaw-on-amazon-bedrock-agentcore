@@ -375,7 +375,7 @@ class AgentCoreStack(Stack):
                     "BrowserCustom",
                     name="openclaw_browser",
                     network_configuration=agentcore.CfnBrowserCustom.BrowserNetworkConfigurationProperty(
-                        network_mode="PRIVATE",
+                        network_mode="VPC",
                         vpc_config=agentcore.CfnBrowserCustom.VpcConfigProperty(
                             subnets=private_subnet_ids,
                             security_groups=[self.agent_sg.security_group_id],
