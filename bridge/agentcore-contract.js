@@ -331,7 +331,7 @@ function writeOpenClawConfig() {
         "edit", // Local edits are ephemeral — use S3 skill instead
         "apply_patch", // Code patching not needed for chat assistant
         "read", // Blocks local file reads — prevents reading sibling process environ; use s3-user-files
-        "browser", // No headless browser in ARM64 container
+        "browser", // Deny built-in browser tool — use agentcore-browser skill instead (via exec)
         "canvas", // No UI rendering in headless chat context
         "cron", // EventBridge handles scheduling, not OpenClaw's built-in cron
         "gateway", // Admin tool — not needed for end users
@@ -464,6 +464,28 @@ function writeOpenClawConfig() {
         "",
         "**Important**: The `<user_id>` is your namespace (e.g. `telegram_12345`). Never write API keys to regular user files (s3-user-files). Always use the api-keys skill.",
         "",
+        ...(process.env.BROWSER_IDENTIFIER
+          ? [
+              "## Browser (AgentCore Browser)",
+              "",
+              "You have the **agentcore-browser** skill for headless Chromium browsing. Use it when users ask to:",
+              "- Visit or navigate to a web page",
+              "- Take a screenshot of a website",
+              "- Interact with page elements (click buttons, fill forms, scroll)",
+              "",
+              "**Commands** (run via Bash):",
+              '- Navigate: `node /skills/agentcore-browser/navigate.js \'{"url": "https://example.com"}\'`',
+              '- Screenshot: `node /skills/agentcore-browser/screenshot.js \'{"description": "Page screenshot"}\'`',
+              '- Click: `node /skills/agentcore-browser/interact.js \'{"action": "click", "selector": "#btn"}\'`',
+              '- Type: `node /skills/agentcore-browser/interact.js \'{"action": "type", "selector": "#input", "text": "hello"}\'`',
+              '- Scroll: `node /skills/agentcore-browser/interact.js \'{"action": "scroll"}\'`',
+              '- Wait: `node /skills/agentcore-browser/interact.js \'{"action": "wait", "selector": ".results"}\'`',
+              "",
+              "Screenshots are uploaded to S3 and delivered as images to the user's chat.",
+              "The browser session is pre-created at startup — no setup needed.",
+              "",
+            ]
+          : []),
         "## Sub-agents",
         "",
         "Skills like deep-research-pro and task-decomposer can spawn sub-agents for parallel work.",
