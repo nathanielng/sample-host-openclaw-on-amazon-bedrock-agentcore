@@ -870,6 +870,9 @@ async function init(userId, actorId, channel) {
       });
       openclawEnv.OPENCLAW_NO_AWS = "1";
     }
+    // Propagate INTERNAL_USER_ID so OpenClaw skills (e.g., eventbridge-cron)
+    // can resolve the container's authorized userId for DynamoDB writes.
+    openclawEnv.INTERNAL_USER_ID = userId;
     openclawProcess = spawn(
       "openclaw",
       ["gateway", "run", "--port", String(OPENCLAW_PORT), "--verbose"],
