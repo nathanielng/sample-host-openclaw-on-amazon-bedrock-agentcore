@@ -47,7 +47,8 @@ const SYSTEM_PROMPT =
   "production keys. Use retrieve_api_key to look up keys from either backend.\n\n" +
   "After full startup completes (~1-2 minutes), you gain additional capabilities: " +
   "deep research (multi-step analysis), YouTube transcripts, rich Telegram formatting, " +
-  "task decomposition with sub-agents, and enhanced web reading via Jina.";
+  "task decomposition with sub-agents, and enhanced web reading via Jina. " +
+  "Do not use markdown tables in responses — use bullet lists or plain paragraphs, as they render better in chat interfaces like Telegram and Slack.";
 
 const TOOLS = [
   {
@@ -443,6 +444,7 @@ const TOOL_ENV = {
   CRON_LAMBDA_ARN: process.env.CRON_LAMBDA_ARN || "",
   EVENTBRIDGE_ROLE_ARN: process.env.EVENTBRIDGE_ROLE_ARN || "",
   IDENTITY_TABLE_NAME: process.env.IDENTITY_TABLE_NAME || "",
+  INTERNAL_USER_ID: process.env.INTERNAL_USER_ID || "",
 };
 
 const SCRIPT_MAP = {

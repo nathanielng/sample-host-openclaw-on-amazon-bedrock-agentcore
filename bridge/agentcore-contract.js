@@ -71,12 +71,21 @@ const SCOPED_CREDS_DIR = "/tmp/scoped-creds";
 const IDENTITY_FILE = "/tmp/current-identity.json";
 const BROWSER_SESSION_FILE = "/tmp/agentcore-browser-session.json";
 const BROWSER_SESSION_TIMEOUT_SECONDS = 3600;
-const BUILD_VERSION = "v35"; // Bump in cdk.json to force container redeploy
+const BUILD_VERSION = "v40"; // Bump in cdk.json to force container redeploy
 
 // OpenClaw process diagnostics (last N lines of stdout/stderr)
 const OPENCLAW_LOG_LIMIT = 50;
 let openclawLogs = [];
 let openclawExitCode = null;
+let lastOpenClawEnv = null;
+
+// OpenClaw auto-restart on crash
+let openclawRestartCount = 0;
+const OPENCLAW_MAX_RESTARTS = 3;
+const OPENCLAW_RESTART_DELAY_MS = 5000;
+
+// Active task tracking — HealthyBusy prevents AgentCore from terminating during long tasks
+let activeTaskCount = 0;
 
 // Message queue for serializing concurrent requests (OpenClaw WebSocket path)
 let messageQueue = [];
@@ -360,6 +369,7 @@ function writeOpenClawConfig() {
         enabled: false,
         allowInsecureAuth: true,
         dangerouslyDisableDeviceAuth: true,
+        dangerouslyAllowHostHeaderOriginFallback: true,
         allowedOrigins: ["*"],
       },
     },
@@ -386,6 +396,13 @@ function writeOpenClawConfig() {
         "",
         "You are a helpful AI assistant running in a per-user container on AWS.",
         "You have built-in web tools, file storage, scheduling, and many community skills.",
+        "",
+        "## Response Formatting",
+        "",
+        "Format responses for chat messaging apps (Telegram, Slack):",
+        "- **No markdown tables** — use bullet lists or plain text paragraphs instead",
+        "- Tables do not render in most chat apps; bullets always work",
+        "- Keep responses concise and chat-appropriate",
         "",
         "## Built-in Web Tools",
         "",
@@ -651,6 +668,68 @@ async function stopBrowserSessions() {
 }
 
 /**
+ * Auto-restart OpenClaw if it crashes mid-session.
+ * Uses linear backoff (5s, 10s, 15s) with a maximum of 3 retries.
+ * Does not restart during shutdown or if OpenClaw recovered on its own.
+ */
+function scheduleOpenClawRestart(namespace) {
+  if (shuttingDown) return;
+  if (openclawRestartCount >= OPENCLAW_MAX_RESTARTS) {
+    console.error(
+      `[contract] OpenClaw crashed ${openclawRestartCount} times — giving up, lightweight agent will handle messages`,
+    );
+    return;
+  }
+  openclawRestartCount++;
+  const delay = OPENCLAW_RESTART_DELAY_MS * openclawRestartCount;
+  console.log(
+    `[contract] Scheduling OpenClaw restart #${openclawRestartCount} in ${delay}ms...`,
+  );
+  setTimeout(() => {
+    if (shuttingDown || openclawReady) return;
+    console.log(
+      `[contract] Restarting OpenClaw (attempt #${openclawRestartCount})...`,
+    );
+    openclawProcess = spawn(
+      "openclaw",
+      ["gateway", "run", "--port", String(OPENCLAW_PORT), "--verbose"],
+      { stdio: ["ignore", "pipe", "pipe"], env: lastOpenClawEnv },
+    );
+    const captureLog2 = (stream, label) => {
+      let buf = "";
+      stream.on("data", (chunk) => {
+        buf += chunk.toString();
+        const lines = buf.split("\n");
+        buf = lines.pop();
+        for (const line of lines) {
+          if (line.trim()) {
+            console.log(`[openclaw:${label}] ${line}`);
+            openclawLogs.push(`[${label}] ${line}`);
+            if (openclawLogs.length > OPENCLAW_LOG_LIMIT) openclawLogs.shift();
+          }
+        }
+      });
+    };
+    captureLog2(openclawProcess.stdout, "out");
+    captureLog2(openclawProcess.stderr, "err");
+    openclawProcess.on("exit", (code2) => {
+      console.log(
+        `[contract] OpenClaw (restart #${openclawRestartCount}) exited with code ${code2}`,
+      );
+      openclawExitCode = code2;
+      openclawReady = false;
+      scheduleOpenClawRestart(namespace);
+    });
+    // Poll for readiness after restart
+    pollOpenClawReadiness(namespace).catch((err) => {
+      console.error(
+        `[contract] OpenClaw restart readiness poll failed: ${err.message}`,
+      );
+    });
+  }, delay);
+}
+
+/**
  * Initialization — called on first /invocations request.
  *
  * Uses pre-fetched secrets. Starts proxy, OpenClaw, and workspace restore
@@ -670,6 +749,9 @@ async function init(userId, actorId, channel) {
 
     // Expose USER_ID so child processes (OpenClaw skill scripts) inherit it
     process.env.USER_ID = actorId;
+    // Expose INTERNAL_USER_ID for lightweight agent tool env (eventbridge-cron authorization)
+    process.env.INTERNAL_USER_ID = userId;
+    agent.TOOL_ENV.INTERNAL_USER_ID = userId;
 
     // Write initial identity file for the proxy to read
     updateIdentityFile(actorId, channel);
@@ -754,6 +836,7 @@ async function init(userId, actorId, channel) {
       SUBAGENT_MODEL_NAME: SUBAGENT_MODEL_NAME,
       SUBAGENT_BEDROCK_MODEL_ID: process.env.SUBAGENT_BEDROCK_MODEL_ID || "",
       USER_ID: actorId,
+      INTERNAL_USER_ID: userId,  // container internal userId for skill authorization
       CHANNEL: channel,
       OPENCLAW_SKIP_CRON: "1", // Disable internal cron — EventBridge handles scheduling
     };
@@ -794,11 +877,16 @@ async function init(userId, actorId, channel) {
       });
       openclawEnv.OPENCLAW_NO_AWS = "1";
     }
+    // Propagate INTERNAL_USER_ID so OpenClaw skills (e.g., eventbridge-cron)
+    // can resolve the container's authorized userId for DynamoDB writes.
+    openclawEnv.INTERNAL_USER_ID = userId;
     openclawProcess = spawn(
       "openclaw",
       ["gateway", "run", "--port", String(OPENCLAW_PORT), "--verbose"],
       { stdio: ["ignore", "pipe", "pipe"], env: openclawEnv },
     );
+    lastOpenClawEnv = openclawEnv;
+    openclawRestartCount = 0;
     // Capture OpenClaw stdout/stderr for diagnostics
     const captureLog = (stream, label) => {
       let buf = "";
@@ -821,6 +909,7 @@ async function init(userId, actorId, channel) {
       console.log(`[contract] OpenClaw exited with code ${code}`);
       openclawExitCode = code;
       openclawReady = false;
+      scheduleOpenClawRestart(currentNamespace);
     });
 
     // Restore workspace from S3 (non-blocking, needed for OpenClaw)
@@ -888,21 +977,40 @@ function extractTextFromContent(content) {
     // Check if the string is a JSON-serialized array of content blocks
     const trimmed = content.trim();
     if (trimmed.startsWith("[{") && trimmed.endsWith("]")) {
+      let parsed = null;
       try {
-        const parsed = JSON.parse(trimmed);
-        if (
-          Array.isArray(parsed) &&
-          parsed.length > 0 &&
-          parsed[0].type === "text"
-        ) {
-          const text = parsed
-            .filter((b) => b.type === "text")
-            .map((b) => b.text)
-            .join("");
-          // Recurse to unwrap further nesting
-          return extractTextFromContent(text);
+        parsed = JSON.parse(trimmed);
+      } catch {
+        // Retry with literal control characters escaped (JS JSON.parse is strict)
+        try {
+          const sanitized = trimmed.replace(/[\x00-\x1f\x7f]/g, c => {
+            const e = {"\b":"\\b","\t":"\\t","\n":"\\n","\f":"\\f","\r":"\\r"};
+            return e[c] || ("\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
+          });
+          parsed = JSON.parse(sanitized);
+        } catch {
+          // Both failed — try regex extraction below
         }
-      } catch {}
+      }
+      if (!parsed) {
+        // Regex fallback for malformed JSON (e.g., "text","value" instead of "text":"value")
+        const textMatch = trimmed.match(/[,{]\s*"text"\s*[,:]\s*"((?:[^"\\]|\\.)*)"/);
+        if (textMatch) {
+          try {
+            const extracted = JSON.parse('"' + textMatch[1] + '"');
+            if (extracted) return extractTextFromContent(extracted);
+          } catch {
+            return extractTextFromContent(textMatch[1]);
+          }
+        }
+      }
+      if (parsed && Array.isArray(parsed) && parsed.length > 0 && parsed[0].type === "text") {
+        const text = parsed
+          .filter((b) => b.type === "text")
+          .map((b) => b.text)
+          .join("");
+        if (text) return extractTextFromContent(text);
+      }
     }
     // Plain text string
     return content;
@@ -1225,20 +1333,23 @@ const server = http.createServer(async (req, res) => {
     pingCount++;
     const now = Date.now();
     const uptimeSec = Math.floor((now - startTime) / 1000);
+    // HealthyBusy prevents AgentCore from terminating during active tasks.
+    // Healthy allows natural idle termination when no tasks are running.
+    const status = activeTaskCount > 0 ? "HealthyBusy" : "Healthy";
     const responseBody = {
-      status: "Healthy",
+      status,
+      time_of_last_update: Math.floor(Date.now() / 1000),
+      active_tasks: activeTaskCount,
     };
 
     // Log every ping for the first 5 minutes, then every 60s
     if (uptimeSec < 300 || now - lastPingLogTime >= PING_LOG_INTERVAL_MS) {
       console.log(
-        `[contract] /ping #${pingCount} uptime=${uptimeSec}s status=${responseBody.status} openclawReady=${openclawReady} proxyReady=${proxyReady}`,
+        `[contract] /ping #${pingCount} uptime=${uptimeSec}s status=${responseBody.status} openclawReady=${openclawReady} proxyReady=${proxyReady} activeTasks=${activeTaskCount}`,
       );
       lastPingLogTime = now;
     }
 
-    // Return Healthy (not HealthyBusy) — allows natural idle termination.
-    // Per-user sessions should terminate when idle.
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(responseBody));
     return;
@@ -1284,6 +1395,8 @@ const server = http.createServer(async (req, res) => {
             openclawLogs: openclawLogs.slice(-20),
             totalRequestCount: proxyHealth?.total_requests ?? null,
             subagentRequestCount: proxyHealth?.subagent_requests ?? null,
+            activeTaskCount,
+            pingStatus: activeTaskCount > 0 ? "HealthyBusy" : "Healthy",
           };
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ response: JSON.stringify(diag) }));
@@ -1355,30 +1468,39 @@ const server = http.createServer(async (req, res) => {
             return;
           }
 
-          // Enqueue message (serialized with chat messages to prevent WebSocket races)
+          // Track active task to prevent idle termination during cron processing
+          activeTaskCount++;
           let responseText;
           try {
-            responseText = await enqueueMessage(message);
-          } catch (bridgeErr) {
-            responseText = "";
-            console.error(
-              `[contract] Cron bridge error: ${bridgeErr.message}`,
-            );
-          }
-          // If bridge returned empty, fall back to lightweight agent
-          if (!responseText || !responseText.trim()) {
-            console.warn(
-              "[contract] Cron bridge returned empty — falling back to lightweight agent",
-            );
+            // Enqueue message (serialized with chat messages to prevent WebSocket races)
             try {
-              responseText = await agent.chat(message, actorId, Date.now() + 30000);
-            } catch (agentErr) {
-              responseText =
-                "I couldn't process this scheduled task. Please check the configuration.";
+              responseText = await enqueueMessage(message);
+            } catch (bridgeErr) {
+              responseText = "";
               console.error(
-                `[contract] Cron lightweight agent fallback error: ${agentErr.message}`,
+                `[contract] Cron bridge error: ${bridgeErr.message}`,
               );
             }
+            // Belt-and-suspenders: strip any remaining content-block JSON wrappers
+            if (responseText) responseText = extractTextFromContent(responseText);
+
+            // If bridge returned empty, fall back to lightweight agent
+            if (!responseText || !responseText.trim()) {
+              console.warn(
+                "[contract] Cron bridge returned empty — falling back to lightweight agent",
+              );
+              try {
+                responseText = await agent.chat(message, actorId, Date.now() + 30000);
+              } catch (agentErr) {
+                responseText =
+                  "I couldn't process this scheduled task. Please check the configuration.";
+                console.error(
+                  `[contract] Cron lightweight agent fallback error: ${agentErr.message}`,
+                );
+              }
+            }
+          } finally {
+            activeTaskCount = Math.max(0, activeTaskCount - 1);
           }
 
           res.writeHead(200, { "Content-Type": "application/json" });
@@ -1448,49 +1570,58 @@ const server = http.createServer(async (req, res) => {
 
           const bridgeText = buildBridgeText(message);
 
-          // Route based on readiness: OpenClaw (full) > lightweight agent (shim)
+          // Track active task to prevent idle termination during chat processing
+          activeTaskCount++;
           let responseText;
-          if (openclawReady) {
-            // Full OpenClaw path — WebSocket bridge
-            try {
-              responseText = await enqueueMessage(bridgeText);
-            } catch (bridgeErr) {
-              console.error(
-                `[contract] Bridge error, falling back to shim: ${bridgeErr.message}`,
-              );
-              responseText = "";
-            }
-            // If bridge returned empty (OpenClaw sent no content), fall back to
-            // lightweight agent so the user always gets a real AI response.
-            if (!responseText || !responseText.trim()) {
-              console.warn(
-                "[contract] Bridge returned empty — falling back to lightweight agent",
-              );
+          try {
+            // Route based on readiness: OpenClaw (full) > lightweight agent (shim)
+            if (openclawReady) {
+              // Full OpenClaw path — WebSocket bridge
               try {
-                responseText = await agent.chat(bridgeText, actorId, Date.now() + 30000);
-              } catch (agentErr) {
-                responseText =
-                  "I'm having trouble right now. Please try again in a moment.";
+                responseText = await enqueueMessage(bridgeText);
+              } catch (bridgeErr) {
                 console.error(
-                  `[contract] Lightweight agent fallback error: ${agentErr.message}`,
+                  `[contract] Bridge error, falling back to shim: ${bridgeErr.message}`,
+                );
+                responseText = "";
+              }
+              // If bridge returned empty (OpenClaw sent no content), fall back to
+              // lightweight agent so the user always gets a real AI response.
+              if (!responseText || !responseText.trim()) {
+                console.warn(
+                  "[contract] Bridge returned empty — falling back to lightweight agent",
+                );
+                try {
+                  responseText = await agent.chat(bridgeText, actorId, Date.now() + 30000);
+                } catch (agentErr) {
+                  responseText =
+                    "I'm having trouble right now. Please try again in a moment.";
+                  console.error(
+                    `[contract] Lightweight agent fallback error: ${agentErr.message}`,
+                  );
+                }
+              }
+            } else if (proxyReady) {
+              // Warm-up shim path — lightweight agent via proxy
+              console.log("[contract] Routing via lightweight agent (warm-up)");
+              try {
+                responseText = await agent.chat(bridgeText, actorId, Date.now() + 560000);
+              } catch (agentErr) {
+                responseText = `I'm having trouble right now. Please try again in a moment.`;
+                console.error(
+                  `[contract] Lightweight agent error: ${agentErr.message}`,
                 );
               }
+            } else {
+              // Proxy not ready yet (should be rare — init awaits proxy)
+              responseText = "I'm starting up — please try again in a moment.";
             }
-          } else if (proxyReady) {
-            // Warm-up shim path — lightweight agent via proxy
-            console.log("[contract] Routing via lightweight agent (warm-up)");
-            try {
-              responseText = await agent.chat(bridgeText, actorId, Date.now() + 560000);
-            } catch (agentErr) {
-              responseText = `I'm having trouble right now. Please try again in a moment.`;
-              console.error(
-                `[contract] Lightweight agent error: ${agentErr.message}`,
-              );
-            }
-          } else {
-            // Proxy not ready yet (should be rare — init awaits proxy)
-            responseText = "I'm starting up — please try again in a moment.";
+          } finally {
+            activeTaskCount = Math.max(0, activeTaskCount - 1);
           }
+
+          // Belt-and-suspenders: strip any remaining content-block JSON wrappers
+          if (responseText) responseText = extractTextFromContent(responseText);
 
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(

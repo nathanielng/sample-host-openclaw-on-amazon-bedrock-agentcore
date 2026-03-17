@@ -45,6 +45,8 @@ class AgentCoreStack(Stack):
         cognito_user_pool_id: str,
         cognito_password_secret_name: str,
         gateway_token_secret_name: str,
+        guardrail_id: str = "",
+        guardrail_version: str = "",
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -102,6 +104,17 @@ class AgentCoreStack(Stack):
                 ],
             )
         )
+
+        # Bedrock Guardrails — ApplyGuardrail permission (only when guardrails enabled)
+        if guardrail_id:
+            self.execution_role.add_to_policy(
+                iam.PolicyStatement(
+                    actions=["bedrock:ApplyGuardrail"],
+                    resources=[
+                        f"arn:aws:bedrock:{region}:{account}:guardrail/*",
+                    ],
+                )
+            )
 
         # Secrets Manager — scoped to the 2 secrets the container actually needs
         # (gateway token for WebSocket auth, Cognito secret for identity derivation)
@@ -362,6 +375,7 @@ class AgentCoreStack(Stack):
                 cdk_nag.NagPackSuppression(
                     id="AwsSolutions-IAM5",
                     reason="Bedrock foundation model ARNs require wildcard for model ID. "
+                    "Bedrock guardrail ARNs require wildcard for guardrail version. "
                     "Logs, Metrics, X-Ray, and Secrets Manager APIs are scoped to "
                     "project prefix (openclaw/*) or do not support resource-level "
                     "permissions. Cognito scoped to specific user pool.",
@@ -391,6 +405,8 @@ class AgentCoreStack(Stack):
                         f"Resource::arn:aws:ecr:{region}:{account}:repository/openclaw-bridge-*",
                         f"Resource::arn:aws:ecr:{region}:{account}:repository/openclaw_agent*",
                         f"Resource::arn:aws:ecr:{region}:{account}:repository/bedrock-agentcore-*",
+                        # Bedrock Guardrails (wildcard for guardrail version changes)
+                        f"Resource::arn:aws:bedrock:{region}:{account}:guardrail/*",
                     ],
                 ),
             ],
