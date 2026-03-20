@@ -282,7 +282,7 @@ def _extract_text_from_content_blocks(text):
         if result == prev:
             break
         try:
-            blocks = json.JSONDecoder(strict=False).decode(stripped)
+            blocks = json.JSONDecoder(strict=False).decode(result)
             if isinstance(blocks, list) and blocks:
                 parts = [
                     b.get("text", "")
