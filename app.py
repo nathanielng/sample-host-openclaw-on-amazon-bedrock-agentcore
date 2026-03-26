@@ -53,7 +53,7 @@ agentcore_stack = AgentCoreStack(
     "OpenClawAgentCore",
     cmk_arn=security_stack.cmk.key_arn,
     vpc=vpc_stack.vpc,
-    private_subnet_ids=[s.subnet_id for s in vpc_stack.vpc.private_subnets],
+    subnet_ids=[s.subnet_id for s in vpc_stack.vpc.public_subnets],
     cognito_issuer_url=security_stack.cognito_issuer_url,
     cognito_client_id=security_stack.user_pool_client_id,
     cognito_user_pool_id=security_stack.user_pool_id,
