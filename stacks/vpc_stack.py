@@ -26,16 +26,11 @@ class VpcStack(Stack):
 
         vpc_kwargs = {
             "ip_addresses": ec2.IpAddresses.cidr("10.0.0.0/16"),
-            "nat_gateways": 1,
+            "nat_gateways": 0,
             "subnet_configuration": [
                 ec2.SubnetConfiguration(
                     name="Public",
                     subnet_type=ec2.SubnetType.PUBLIC,
-                    cidr_mask=24,
-                ),
-                ec2.SubnetConfiguration(
-                    name="Private",
-                    subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS,
                     cidr_mask=24,
                 ),
             ],
@@ -85,22 +80,22 @@ class VpcStack(Stack):
         )
 
         # --- VPC Endpoints ------------------------------------------------
-        private_subnets = ec2.SubnetSelection(
-            subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS
+        public_subnets = ec2.SubnetSelection(
+            subnet_type=ec2.SubnetType.PUBLIC
         )
 
         # Bedrock Runtime endpoint: Private DNS disabled so global/* cross-region
         # inference profiles (e.g. global.anthropic.claude-sonnet-4-6) can route
-        # via NAT gateway to AWS's global routing layer. With private DNS enabled,
-        # bedrock-runtime.{region}.amazonaws.com resolves to the VPC endpoint IP
-        # even when the proxy sets a custom endpoint URL, blocking cross-region calls.
-        # Regional model calls still work — they route via NAT to the public endpoint.
+        # directly to AWS's global routing layer via the internet gateway.
+        # With private DNS enabled, bedrock-runtime.{region}.amazonaws.com resolves
+        # to the VPC endpoint IP even when the proxy sets a custom endpoint URL,
+        # blocking cross-region calls.
         self.vpc.add_interface_endpoint(
             "BedrockRuntimeEndpoint",
             service=ec2.InterfaceVpcEndpointAwsService.BEDROCK_RUNTIME,
-            subnets=private_subnets,
+            subnets=public_subnets,
             security_groups=[self.vpce_sg],
-            private_dns_enabled=False,  # Disabled: cross-region profiles need NAT→global routing
+            private_dns_enabled=False,  # Disabled: cross-region profiles route via internet gateway
         )
 
         interface_endpoints = {
@@ -118,7 +113,7 @@ class VpcStack(Stack):
             self.vpc.add_interface_endpoint(
                 f"{name}Endpoint",
                 service=service,
-                subnets=private_subnets,
+                subnets=public_subnets,
                 security_groups=[self.vpce_sg],
                 private_dns_enabled=True,
             )
@@ -127,7 +122,7 @@ class VpcStack(Stack):
         self.vpc.add_gateway_endpoint(
             "S3Endpoint",
             service=ec2.GatewayVpcEndpointAwsService.S3,
-            subnets=[private_subnets],
+            subnets=[public_subnets],
         )
 
         # --- cdk-nag suppressions ---

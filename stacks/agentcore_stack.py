@@ -39,7 +39,7 @@ class AgentCoreStack(Stack):
         *,
         cmk_arn: str,
         vpc: ec2.IVpc,
-        private_subnet_ids: list[str],
+        subnet_ids: list[str],
         cognito_issuer_url: str,
         cognito_client_id: str,
         cognito_user_pool_id: str,
@@ -324,7 +324,7 @@ class AgentCoreStack(Stack):
                     network_configuration=agentcore.CfnBrowserCustom.BrowserNetworkConfigurationProperty(
                         network_mode="VPC",
                         vpc_config=agentcore.CfnBrowserCustom.VpcConfigProperty(
-                            subnets=private_subnet_ids,
+                            subnets=subnet_ids,
                             security_groups=[self.agent_sg.security_group_id],
                         ),
                     ),
@@ -359,8 +359,8 @@ class AgentCoreStack(Stack):
         CfnOutput(self, "UserFilesBucketName", value=self.user_files_bucket.bucket_name)
         CfnOutput(
             self,
-            "PrivateSubnetIds",
-            value=",".join(private_subnet_ids),
+            "SubnetIds",
+            value=",".join(subnet_ids),
         )
         if self.browser:
             CfnOutput(
