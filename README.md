@@ -10,6 +10,7 @@ Deploy an AI-powered multi-channel messaging bot (Telegram, Slack) on AWS Bedroc
 
 ## Table of Contents
 
+- [Changes from Original Repository](#changes-from-original-repository)
 - [Architecture](#architecture)
 - [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
@@ -41,6 +42,37 @@ Users can send **text and images** — photos sent via Telegram or Slack are dow
 - AWS Bedrock Guardrails — content filtering, PII redaction, topic denial, word filters, prompt attack detection
 - LLM red team testing — 62 test cases across 12 attack categories via promptfoo
 - App-level security E2E tests (TestGuardrailSecurity — 6 tests through the full Telegram webhook pipeline)
+
+## Changes from Original Repository
+
+This fork removes the VPC to reduce idle costs for personal/experimental use. The original repository deploys a full VPC with private subnets, NAT Gateway (later removed), 7 VPC endpoints, flow logs, and a security group for container networking. This fork removes all of that — AgentCore containers run on the public internet without VPC isolation.
+
+**What was removed:**
+- `OpenClawVpc` CDK stack (VPC, subnets, 7 VPC endpoints, flow logs, security groups)
+- VPC and subnet parameters from `AgentCoreStack`
+- `--vpc`, `--subnets`, `--security-groups` flags from the Starter Toolkit deploy
+
+**What changed:**
+- AgentCore Browser switched from `network_mode: VPC` to `network_mode: PUBLIC`
+- `availability_zones` config removed from `cdk.json` (no longer applicable)
+
+**Security tradeoff:** The VPC was one layer in the original defense-in-depth model — it restricted container egress to HTTPS-only via security groups and routed AWS API calls through private VPC endpoints. Without it, containers have unrestricted internet access. All other security layers remain: STS scoped credentials, Bedrock Guardrails, webhook authentication, tool hardening, and per-user isolation.
+
+### Cost Comparison
+
+| Resource | Original | This Fork |
+|---|---|---|
+| VPC Endpoints (6 interface) | ~$45/mo | $0 (removed) |
+| S3 Gateway Endpoint | $0 (free) | $0 (removed, not needed) |
+| VPC Flow Logs | ~$1–3/mo | $0 (removed) |
+| NAT Gateway | $0 (already removed upstream) | $0 |
+| KMS CMK | ~$1/mo | ~$1/mo |
+| Secrets Manager (7 secrets) | ~$2.80/mo | ~$2.80/mo |
+| CloudWatch Logs | ~$1–3/mo | ~$1–3/mo |
+| DynamoDB (on-demand) | ~$0–1/mo | ~$0–1/mo |
+| **Fixed idle cost** | **~$50–55/mo** | **~$5–8/mo** |
+
+Usage-based costs (Bedrock model inference, Guardrails, AgentCore Runtime, Lambda) are unchanged and scale with activity. For light personal use (a few messages per day), expect ~$15–40/mo on top of the fixed costs.
 
 ## Architecture
 

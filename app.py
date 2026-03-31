@@ -6,7 +6,7 @@ channel ingestion via Router Lambda. No keepalive needed — sessions
 idle-terminate naturally.
 
 Hybrid deployment model:
-  Phase 1 (CDK): VPC, Security, AgentCore-base (Role/SG/S3), Observability
+  Phase 1 (CDK): Security, AgentCore-base (Role/S3), Observability
   Phase 2 (Starter Toolkit): Runtime, Endpoint, ECR, Docker build
   Phase 3 (CDK): Router, Cron, TokenMonitoring (needs runtime_id/endpoint_id)
 """
@@ -16,7 +16,6 @@ import os
 import aws_cdk as cdk
 import cdk_nag
 
-from stacks.vpc_stack import VpcStack
 from stacks.security_stack import SecurityStack
 from stacks.agentcore_stack import AgentCoreStack
 from stacks.router_stack import RouterStack
@@ -33,8 +32,6 @@ env = cdk.Environment(
 )
 
 # --- Foundation ---
-vpc_stack = VpcStack(app, "OpenClawVpc", env=env)
-
 security_stack = SecurityStack(app, "OpenClawSecurity", env=env)
 
 # --- Guardrails (Bedrock content filtering — opt-in via enable_guardrails) ---
@@ -45,15 +42,13 @@ guardrails_stack = GuardrailsStack(
     env=env,
 )
 
-# --- AgentCore base resources (Role, SG, S3) ---
+# --- AgentCore base resources (Role, S3) ---
 # Runtime/Endpoint created by Starter Toolkit; runtime_id/endpoint_id
 # injected via cdk.json context after `agentcore deploy`.
 agentcore_stack = AgentCoreStack(
     app,
     "OpenClawAgentCore",
     cmk_arn=security_stack.cmk.key_arn,
-    vpc=vpc_stack.vpc,
-    subnet_ids=[s.subnet_id for s in vpc_stack.vpc.public_subnets],
     cognito_issuer_url=security_stack.cognito_issuer_url,
     cognito_client_id=security_stack.user_pool_client_id,
     cognito_user_pool_id=security_stack.user_pool_id,

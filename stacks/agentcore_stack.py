@@ -1,15 +1,13 @@
-"""AgentCore Stack — IAM, S3, and Security Group for AgentCore Runtime.
+"""AgentCore Stack — IAM, S3 for AgentCore Runtime.
 
 Creates the supporting resources that the AgentCore Runtime needs:
   - Execution Role (with all IAM policies for Bedrock, S3, Secrets Manager, etc.)
-  - Security Group (VPC networking for the container)
   - S3 Bucket (per-user file storage and workspace sync)
 
 The Runtime itself (container, endpoint) is deployed separately via the
 AgentCore Starter Toolkit (`agentcore deploy`), which handles ECR, Docker
 build (CodeBuild), and Runtime/Endpoint lifecycle. The deploy script
-passes the execution role ARN, subnet IDs, and security group ID from
-this stack to the toolkit.
+passes the execution role ARN from this stack to the toolkit.
 """
 
 from aws_cdk import (
@@ -19,7 +17,6 @@ from aws_cdk import (
     Stack,
     RemovalPolicy,
     aws_bedrockagentcore as agentcore,
-    aws_ec2 as ec2,
     aws_iam as iam,
     aws_kms as kms,
     aws_s3 as s3,
@@ -38,8 +35,6 @@ class AgentCoreStack(Stack):
         construct_id: str,
         *,
         cmk_arn: str,
-        vpc: ec2.IVpc,
-        subnet_ids: list[str],
         cognito_issuer_url: str,
         cognito_client_id: str,
         cognito_user_pool_id: str,
@@ -53,25 +48,6 @@ class AgentCoreStack(Stack):
 
         region = Stack.of(self).region
         account = Stack.of(self).account
-
-        # --- Security Group for AgentCore Runtime containers ------------------
-        self.agent_sg = ec2.SecurityGroup(
-            self,
-            "AgentRuntimeSecurityGroup",
-            vpc=vpc,
-            description="AgentCore Runtime container security group",
-            allow_all_outbound=False,
-        )
-        self.agent_sg.add_egress_rule(
-            peer=ec2.Peer.any_ipv4(),
-            connection=ec2.Port.tcp(443),
-            description="HTTPS to VPC endpoints and internet (web_fetch/web_search tools)",
-        )
-        self.agent_sg.add_ingress_rule(
-            peer=ec2.Peer.ipv4(vpc.vpc_cidr_block),
-            connection=ec2.Port.tcp(443),
-            description="HTTPS from VPC",
-        )
 
         # --- Execution Role (what the container can do) -----------------------
         execution_role_name = f"openclaw-agentcore-execution-role-{region}"
@@ -322,11 +298,7 @@ class AgentCoreStack(Stack):
                     "BrowserCustom",
                     name="openclaw_browser",
                     network_configuration=agentcore.CfnBrowserCustom.BrowserNetworkConfigurationProperty(
-                        network_mode="VPC",
-                        vpc_config=agentcore.CfnBrowserCustom.VpcConfigProperty(
-                            subnets=subnet_ids,
-                            security_groups=[self.agent_sg.security_group_id],
-                        ),
+                        network_mode="PUBLIC",
                     ),
                     execution_role_arn=self.execution_role.role_arn,
                     recording_config=agentcore.CfnBrowserCustom.RecordingConfigProperty(
@@ -355,13 +327,7 @@ class AgentCoreStack(Stack):
 
         # --- Outputs ----------------------------------------------------------
         CfnOutput(self, "ExecutionRoleArn", value=self.execution_role.role_arn)
-        CfnOutput(self, "SecurityGroupId", value=self.agent_sg.security_group_id)
         CfnOutput(self, "UserFilesBucketName", value=self.user_files_bucket.bucket_name)
-        CfnOutput(
-            self,
-            "SubnetIds",
-            value=",".join(subnet_ids),
-        )
         if self.browser:
             CfnOutput(
                 self,
@@ -423,20 +389,6 @@ class AgentCoreStack(Stack):
                     id="AwsSolutions-S1",
                     reason="Server access logging not required for user file storage — "
                     "CloudTrail S3 data events provide sufficient audit trail.",
-                ),
-            ],
-        )
-        cdk_nag.NagSuppressions.add_resource_suppressions(
-            self.agent_sg,
-            [
-                cdk_nag.NagPackSuppression(
-                    id="AwsSolutions-EC23",
-                    reason="Ingress uses VPC CIDR; not open to 0.0.0.0/0.",
-                ),
-                cdk_nag.NagPackSuppression(
-                    id="CdkNagValidationFailure",
-                    reason="Security group rule uses Fn::GetAtt for VPC CIDR which "
-                    "cannot be validated at synth time.",
                 ),
             ],
         )

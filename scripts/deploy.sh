@@ -2,7 +2,7 @@
 # deploy.sh — Hybrid deployment: CDK + AgentCore Starter Toolkit.
 #
 # Three-phase deployment:
-#   Phase 1: CDK deploys foundation (VPC, Security, AgentCore base, Observability)
+#   Phase 1: CDK deploys foundation (Security, AgentCore base, Observability)
 #   Phase 2: Starter Toolkit deploys Runtime (ECR, Docker build, Runtime, Endpoint)
 #   Phase 3: CDK deploys dependent stacks (Router, Cron, TokenMonitoring)
 #
@@ -128,7 +128,6 @@ phase1_cdk() {
   activate_venv
 
   cdk deploy \
-    OpenClawVpc \
     OpenClawSecurity \
     OpenClawGuardrails \
     OpenClawAgentCore \
@@ -146,16 +145,6 @@ read_cdk_outputs() {
   EXECUTION_ROLE_ARN=$(aws cloudformation describe-stacks \
     --stack-name OpenClawAgentCore --region "$REGION" \
     --query "Stacks[0].Outputs[?OutputKey=='ExecutionRoleArn'].OutputValue" \
-    --output text)
-
-  SECURITY_GROUP_ID=$(aws cloudformation describe-stacks \
-    --stack-name OpenClawAgentCore --region "$REGION" \
-    --query "Stacks[0].Outputs[?OutputKey=='SecurityGroupId'].OutputValue" \
-    --output text)
-
-  PRIVATE_SUBNET_IDS=$(aws cloudformation describe-stacks \
-    --stack-name OpenClawAgentCore --region "$REGION" \
-    --query "Stacks[0].Outputs[?OutputKey=='PrivateSubnetIds'].OutputValue" \
     --output text)
 
   USER_FILES_BUCKET=$(aws cloudformation describe-stacks \
@@ -198,8 +187,6 @@ read_cdk_outputs() {
   SESSION_MAX=$(python3 -c "import json; print(json.load(open('$PROJECT_DIR/cdk.json'))['context'].get('session_max_lifetime',28800))")
 
   echo "  Execution Role: $EXECUTION_ROLE_ARN"
-  echo "  Security Group: $SECURITY_GROUP_ID"
-  echo "  Subnets:        $PRIVATE_SUBNET_IDS"
   echo "  S3 Bucket:      $USER_FILES_BUCKET"
 }
 
@@ -235,9 +222,6 @@ phase2_toolkit() {
     --entrypoint bridge/agentcore-contract.js \
     --execution-role "$EXECUTION_ROLE_ARN" \
     --region "$REGION" \
-    --vpc \
-    --subnets "$PRIVATE_SUBNET_IDS" \
-    --security-groups "$SECURITY_GROUP_ID" \
     --idle-timeout "$SESSION_IDLE" \
     --max-lifetime "$SESSION_MAX" \
     --deployment-type container \
